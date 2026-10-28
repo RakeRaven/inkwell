@@ -82,7 +82,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             guard bookMode != oldValue else { return }
             ink.fingerAllowed = !bookMode
             // book pages are paper edge to edge, and a spread's blank end page stays white
-            backgroundColor = bookMode ? .white : Theme.uiPaper
+            backgroundColor = bookMode ? .clear : Theme.uiPaper
             spine.isHidden = !bookMode
             applyScrolling()
             fittedSize = .zero
@@ -100,7 +100,12 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     private let rulerLayer = PassthroughView()
     private var ruler: RulerView?
     private lazy var cornerPress = UILongPressGestureRecognizer(target: self, action: #selector(cornerPressed(_:)))
-    private let cornerGate = GestureGate()
+    private lazy var cornerPull = UIPanGestureRecognizer(target: self, action: #selector(cornerPulled(_:)))
+    private let cornerGate = FoldGate()
+    /// The corner being pulled, and whether holding it still has made it a bookmark.
+    private var pull: (corner: PageCorner, armed: Bool, still: DispatchWorkItem?)?
+    /// Old page and direction, waiting for the new page to arrive so it can flip over.
+    private var pendingFlip: (old: UIImage, delta: Int, cover: UIView)?
 
     private func raiseLayers() {
         canvas.bringSubviewToFront(overlay)
@@ -118,18 +123,63 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         }
     }
 
+    /// Holding a folded corner flattens it out again.
     @objc private func cornerPressed(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began, let corner = corner(at: gesture.location(in: overlay)) else { return }
+        guard gesture.state == .began, let corner = corner(at: gesture.location(in: overlay)),
+              (page?.folds ?? []).contains(corner) else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        let folding = !(page?.folds ?? []).contains(corner)
         let fade = CATransition()
         fade.type = .fade
         fade.duration = 0.2
         foldView.layer.add(fade, forKey: "fold")
-        editPage(folding ? "Fold Corner" : "Unfold Corner") { page in
-            var folds = page.folds ?? []
-            if folding { folds.append(corner) } else { folds.removeAll { $0 == corner } }
-            page.folds = folds.isEmpty ? nil : folds
+        editPage("Unfold Corner") { page in
+            page.folds?.removeAll { $0 == corner }
+            if page.folds?.isEmpty == true { page.folds = nil }
+        }
+    }
+
+    /// Pull a corner over by hand; hold it still to keep the fold as a bookmark, or let go and it falls back.
+    @objc private func cornerPulled(_ gesture: UIPanGestureRecognizer) {
+        let point = gesture.location(in: overlay)
+        switch gesture.state {
+        case .began:
+            let t = gesture.translation(in: overlay)
+            guard let corner = corner(at: CGPoint(x: point.x - t.x, y: point.y - t.y)) else { return }
+            pull = (corner, false, nil)
+            fallthrough
+        case .changed:
+            guard let current = pull else { return }
+            let c = current.corner.point(in: CGRect(origin: .zero, size: pageSize))
+            // never pulled further than most of the page
+            let reach = min(pageSize.width, pageSize.height) * 0.8
+            let d = CGPoint(x: point.x - c.x, y: point.y - c.y), length = hypot(d.x, d.y)
+            let tip = length > reach ? CGPoint(x: c.x + d.x / length * reach, y: c.y + d.y / length * reach) : point
+            foldView.live = (current.corner, tip)
+            guard !current.armed else { return }
+            current.still?.cancel()
+            let still = DispatchWorkItem { [weak self] in
+                guard let self, self.pull?.corner == current.corner else { return }
+                self.pull?.armed = true
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+            pull?.still = still
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: still)
+        default:
+            guard let current = pull else { return }
+            current.still?.cancel()
+            pull = nil
+            if current.armed {
+                foldView.live = nil
+                let fade = CATransition()
+                fade.type = .fade
+                fade.duration = 0.18
+                foldView.layer.add(fade, forKey: "fold")
+                editPage("Fold Corner") { page in
+                    page.folds = (page.folds ?? []).filter { $0 != current.corner } + [current.corner]
+                }
+            } else {
+                foldView.release()
+            }
         }
     }
 
@@ -187,8 +237,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         let offset = canvas.contentOffset, view = canvas.bounds.size
         var scale = canvas.zoomScale / fitScale
         var center = CGPoint(x: (offset.x + view.width / 2) / size.width, y: (offset.y + view.height / 2) / size.height)
-        if scale < 1.03 {
-            // back at the whole page: settle exactly so page turns come back
+        if abs(scale - 1) < 0.04 {
+            // close to the whole page: settle exactly on it
             scale = 1
             center = CGPoint(x: 0.5, y: 0.5)
             if settled, abs(canvas.zoomScale - fitScale) > 0.0001 { canvas.setZoomScale(fitScale, animated: true) }
@@ -262,14 +312,24 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         canvas.addSubview(foldView)
         canvas.addSubview(rulerLayer)
 
-        // hold a page corner to fold it over and bookmark the page
+        // pull a page corner over to fold it; holding a folded one flattens it
         cornerPress.minimumPressDuration = 0.45
-        cornerPress.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
-        cornerPress.delegate = cornerGate
-        canvas.addGestureRecognizer(cornerPress)
+        cornerPull.maximumNumberOfTouches = 1
+        for gesture in [cornerPress, cornerPull] as [UIGestureRecognizer] {
+            gesture.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+            gesture.delegate = cornerGate
+            canvas.addGestureRecognizer(gesture)
+        }
         cornerGate.shouldBegin = { [weak self] gesture in
             guard let self, self.mode == .draw else { return false }
-            return self.corner(at: gesture.location(in: self.overlay)) != nil
+            var point = gesture.location(in: self.overlay)
+            if let pan = gesture as? UIPanGestureRecognizer {
+                let t = pan.translation(in: self.overlay)
+                point = CGPoint(x: point.x - t.x, y: point.y - t.y)
+            }
+            guard let corner = self.corner(at: point) else { return false }
+            let folded = (self.page?.folds ?? []).contains(corner)
+            return gesture === self.cornerPress ? folded : !folded
         }
 
         selectionLayer.fillColor = Theme.uiAccent.withAlphaComponent(0.08).cgColor
@@ -366,7 +426,11 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             // undo steps belong to the previous page
             canvas.undoManager?.removeAllActions()
             canvas.setContentOffset(CGPoint(x: -canvas.contentInset.left, y: -canvas.contentInset.top), animated: false)
-            if pushDirection != 0 {
+            if let flip = pendingFlip {
+                pendingFlip = nil
+                // let the new page draw, then turn the old one over it
+                DispatchQueue.main.async { [weak self] in self?.flip(from: flip.old, delta: flip.delta, cover: flip.cover) }
+            } else if pushDirection != 0 {
                 let push = CATransition()
                 push.type = .push
                 push.subtype = pushDirection > 0 ? .fromRight : .fromLeft
@@ -386,8 +450,33 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
 
     @objc private func swiped(_ swipe: UISwipeGestureRecognizer) {
         let delta = swipe.direction == .left ? 1 : -1
-        pushDirection = delta
-        if onSwipe?(delta) != true { pushDirection = 0 }
+        guard pendingFlip == nil, !subviews.contains(where: { $0 is PageFlipView }) else { return }
+        if Appearance.shared.pageTurn == .flip {
+            let old = PageFlipView.snapshot(canvas)
+            // hold the old page on screen until the flip takes over
+            let cover = UIImageView(image: old)
+            cover.frame = bounds
+            addSubview(cover)
+            pendingFlip = (old, delta, cover)
+            if onSwipe?(delta) != true {
+                cover.removeFromSuperview()
+                pendingFlip = nil
+            }
+        } else {
+            pushDirection = delta
+            if onSwipe?(delta) != true { pushDirection = 0 }
+        }
+    }
+
+    /// Turns the page like paper: forward lifts the old page away, back lays the new one down over it.
+    private func flip(from old: UIImage, delta: Int, cover: UIView) {
+        let new = PageFlipView.snapshot(canvas, afterUpdates: true)
+        let forward = delta > 0
+        let flip = PageFlipView(frame: bounds, under: forward ? new : old, leaf: bounds, front: forward ? old : new,
+                                back: nil, backColor: paper.color.fill, forward: forward)
+        addSubview(flip)
+        cover.removeFromSuperview()
+        flip.animate(to: 1, duration: 0.62) { [weak flip] in flip?.removeFromSuperview() }
     }
 
     /// Wires the view to a notebook page and shows it.
@@ -450,7 +539,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             : bounds.width / pageSize.width
         fitScale = fit
         // a book page never shrinks below the paper
-        canvas.minimumZoomScale = bookMode ? fit : fit * 0.5
+        canvas.minimumZoomScale = fit * 0.3
         canvas.maximumZoomScale = fit * 4
         canvas.zoomScale = fit
         syncZoom()
@@ -539,7 +628,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         shapesView.selected = selectedShape
         foldView.folds = page.folds ?? []
         foldView.paperColor = paper.color.fill
-        foldView.behind = backgroundColor ?? Theme.uiPaper
+        foldView.behind = Theme.uiPaper
         for image in page.images {
             let view = UIImageView(image: imageProvider?(image.file))
             view.frame = image.frame
@@ -1214,6 +1303,20 @@ final class PassthroughView: UIView {
 }
 
 /// Gesture delegate driven by a closure.
+/// Corner folds go first: scrolling and page turns around the page wait to see if a corner is being pulled.
+final class FoldGate: NSObject, UIGestureRecognizerDelegate {
+    var shouldBegin: (UIGestureRecognizer) -> Bool = { _ in true }
+
+    func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        shouldBegin(gesture)
+    }
+
+    func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        guard gesture is UIPanGestureRecognizer, let mine = gesture.view, let theirs = other.view else { return false }
+        return other is UIPanGestureRecognizer && mine.isDescendant(of: theirs)
+    }
+}
+
 final class GestureGate: NSObject, UIGestureRecognizerDelegate {
     var shouldBegin: (UIGestureRecognizer) -> Bool = { _ in true }
 

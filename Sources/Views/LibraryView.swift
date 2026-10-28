@@ -109,6 +109,10 @@ struct LibraryView: View {
                     Picker("Appearance", selection: Binding(get: { appearance.scheme }, set: appearance.setScheme)) {
                         ForEach(ColorSchemeChoice.allCases) { Text($0.title).tag($0) }
                     }
+                    Picker("Page Turn", selection: Binding(get: { appearance.pageTurn }, set: appearance.setPageTurn)) {
+                        ForEach(PageTurnStyle.allCases) { Text($0.title).tag($0) }
+                    }
+                    Toggle("Open Like a Book", isOn: Binding(get: { appearance.openAnimation }, set: appearance.setOpenAnimation))
                 } label: {
                     BarIcon("paintpalette")
                 }

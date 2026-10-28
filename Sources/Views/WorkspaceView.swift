@@ -225,7 +225,11 @@ struct WorkspaceView: View {
         let saved = library.workspaceState(for: item)
         split = saved.split
         if item.kind == .notebook {
-            session = NotesSession(store: NotebookStore(item: item, library: library))
+            let notes = NotesSession(store: NotebookStore(item: item, library: library))
+            if Appearance.shared.openAnimation {
+                notes.opening = openingLeaves(for: notes.store, page: saved.notePage)
+            }
+            session = notes
             if let doc = saved.document.flatMap({ library.item($0) }) {
                 let model = ReaderModel(item: doc, library: library)
                 restore(model, from: saved)
@@ -241,6 +245,30 @@ struct WorkspaceView: View {
         notePage = saved.notePage
         readerHidden = saved.readerHidden ?? false
         bookMode = saved.bookMode ?? false
+    }
+
+    /// The cover as it looks in the library, and blank leaves of this notebook's paper.
+    private func openingLeaves(for store: NotebookStore, page: Int) -> OpeningLeaves? {
+        let notebook = store.notebook
+        guard let first = notebook.pages.first else { return nil }
+        let size = notebook.size(of: first)
+        let width: CGFloat = 520, height = width * size.height / max(size.width, 1)
+        let paper = UIGraphicsImageRenderer(size: CGSize(width: width, height: height)).image { context in
+            context.cgContext.scaleBy(x: width / size.width, y: height / size.height)
+            PaperRenderer.draw(notebook.style(of: first), color: notebook.color(of: first), in: context.cgContext, size: size)
+        }
+        var cover: UIImage?
+        if let design = item.cover {
+            let view = CoverView(cover: design, title: item.title, photo: library.coverPhoto(for: item),
+                                 ink: library.coverInk(for: item).map(CoverView.inkImage), stickerImages: library.coverStickers(for: item))
+                .frame(width: width, height: height)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            cover = renderer.uiImage
+        }
+        let pages = min(max(page, 0), 3)
+        guard cover != nil || pages > 0 else { return nil }
+        return OpeningLeaves(cover: cover, pages: pages, paper: paper)
     }
 
     private func restore(_ model: ReaderModel, from saved: WorkspaceState) {

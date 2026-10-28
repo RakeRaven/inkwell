@@ -248,10 +248,15 @@ struct PaperGlyph: View {
 
 /// Dog-eared corners: the tip folded over onto the page, showing the paper's back.
 final class FoldView: UIView {
-    static let size: CGFloat = 56
+    /// How far a bookmark fold reaches along each edge.
+    static let size: CGFloat = 80
 
     var folds: [PageCorner] = [] {
         didSet { if folds != oldValue { setNeedsDisplay() } }
+    }
+    /// A fold following a finger: the corner and where its tip has been pulled to.
+    var live: (corner: PageCorner, tip: CGPoint)? {
+        didSet { setNeedsDisplay() }
     }
     var paperColor: UIColor = .white {
         didSet { setNeedsDisplay() }
@@ -260,6 +265,8 @@ final class FoldView: UIView {
     var behind: UIColor = .clear {
         didSet { setNeedsDisplay() }
     }
+    private var link: CADisplayLink?
+    private var settle: (from: CGPoint, start: CFTimeInterval, done: () -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -273,50 +280,104 @@ final class FoldView: UIView {
         fatalError("init(coder:) is not supported")
     }
 
+    /// Where a saved fold's tip lands.
+    static func tip(of corner: PageCorner, in rect: CGRect) -> CGPoint {
+        let c = corner.point(in: rect)
+        return CGPoint(x: c.x + (corner.isLeft ? size : -size), y: c.y + (corner.isTop ? size : -size))
+    }
+
+    /// Lets go of the live fold: the paper springs back flat.
+    func release(completion: @escaping () -> Void = {}) {
+        guard let live else { return completion() }
+        settle = (live.tip, CACurrentMediaTime(), completion)
+        link?.invalidate()
+        let link = CADisplayLink(target: self, selector: #selector(springBack))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    @objc private func springBack() {
+        guard let settle, let corner = live?.corner else {
+            link?.invalidate()
+            return
+        }
+        let u = min((CACurrentMediaTime() - settle.start) / 0.22, 1)
+        let ease = 1 - pow(1 - u, 3)
+        let c = corner.point(in: bounds)
+        live = (corner, CGPoint(x: settle.from.x + (c.x - settle.from.x) * ease, y: settle.from.y + (c.y - settle.from.y) * ease))
+        if u >= 1 {
+            link?.invalidate()
+            link = nil
+            self.settle = nil
+            live = nil
+            settle.done()
+        }
+    }
+
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        let s = Self.size
-        for corner in folds {
-            let tip = corner.point(in: bounds)
-            let dx: CGFloat = corner.isLeft ? 1 : -1, dy: CGFloat = corner.isTop ? 1 : -1
-            let a = CGPoint(x: tip.x + dx * s, y: tip.y)
-            let b = CGPoint(x: tip.x, y: tip.y + dy * s)
-            // the tip mirrored over the crease
-            let folded = CGPoint(x: a.x + b.x - tip.x, y: a.y + b.y - tip.y)
-
-            let gone = UIBezierPath()
-            gone.move(to: tip)
-            gone.addLine(to: a)
-            gone.addLine(to: b)
-            gone.close()
-            ctx.setBlendMode(.copy)
-            behind.setFill()
-            gone.fill()
-            ctx.setBlendMode(.normal)
-
-            let flap = UIBezierPath()
-            flap.move(to: a)
-            flap.addLine(to: folded)
-            flap.addLine(to: b)
-            flap.close()
-            ctx.saveGState()
-            ctx.setShadow(offset: CGSize(width: -dx * 2, height: -dy * 3), blur: 7, color: UIColor.black.withAlphaComponent(0.3).cgColor)
-            paperColor.setFill()
-            flap.fill()
-            ctx.restoreGState()
-
-            // shading from the crease out to the folded tip
-            ctx.saveGState()
-            flap.addClip()
-            let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
-            let colors = [UIColor.black.withAlphaComponent(0.16).cgColor, UIColor.white.withAlphaComponent(0.12).cgColor] as CFArray
-            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
-                ctx.drawLinearGradient(gradient, start: mid, end: folded, options: [])
-            }
-            ctx.restoreGState()
-            UIColor.black.withAlphaComponent(0.12).setStroke()
-            flap.lineWidth = 0.75
-            flap.stroke()
+        for corner in folds where corner != live?.corner {
+            drawFold(corner.point(in: bounds), tip: Self.tip(of: corner, in: bounds), in: ctx)
         }
+        if let live {
+            drawFold(live.corner.point(in: bounds), tip: live.tip, in: ctx)
+        }
+    }
+
+    /// Folds the paper so `corner` lands on `tip`: the crease is the line halfway between them.
+    private func drawFold(_ corner: CGPoint, tip: CGPoint, in ctx: CGContext) {
+        let d = CGPoint(x: tip.x - corner.x, y: tip.y - corner.y)
+        let length = hypot(d.x, d.y)
+        guard length > 1 else { return }
+        let n = CGPoint(x: d.x / length, y: d.y / length)
+        let mid = CGPoint(x: (corner.x + tip.x) / 2, y: (corner.y + tip.y) / 2)
+        // signed distance past the crease, towards the corner
+        func side(_ p: CGPoint) -> CGFloat { -((p.x - mid.x) * n.x + (p.y - mid.y) * n.y) }
+        let page = [CGPoint(x: bounds.minX, y: bounds.minY), CGPoint(x: bounds.maxX, y: bounds.minY),
+                    CGPoint(x: bounds.maxX, y: bounds.maxY), CGPoint(x: bounds.minX, y: bounds.maxY)]
+        var turned: [CGPoint] = []
+        for (i, a) in page.enumerated() {
+            let b = page[(i + 1) % page.count]
+            let sa = side(a), sb = side(b)
+            if sa >= 0 { turned.append(a) }
+            if (sa >= 0) != (sb >= 0) {
+                let t = sa / (sa - sb)
+                turned.append(CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t))
+            }
+        }
+        guard turned.count >= 3 else { return }
+        let flapPoints = turned.map { p -> CGPoint in
+            let k = 2 * side(p)
+            return CGPoint(x: p.x + n.x * k, y: p.y + n.y * k)
+        }
+        func path(_ points: [CGPoint]) -> UIBezierPath {
+            let path = UIBezierPath()
+            path.move(to: points[0])
+            points.dropFirst().forEach { path.addLine(to: $0) }
+            path.close()
+            return path
+        }
+        let gone = path(turned), flap = path(flapPoints)
+        behind.setFill()
+        gone.fill()
+
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: -n.x * 3, height: -n.y * 3 + 2), blur: 9, color: UIColor.black.withAlphaComponent(0.3).cgColor)
+        paperColor.setFill()
+        flap.fill()
+        ctx.restoreGState()
+
+        // darker along the crease, catching light towards the tip, like the curl of real paper
+        ctx.saveGState()
+        flap.addClip()
+        let colors = [UIColor.black.withAlphaComponent(0.2).cgColor, UIColor.black.withAlphaComponent(0.04).cgColor,
+                      UIColor.white.withAlphaComponent(0.18).cgColor] as CFArray
+        if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 0.35, 1]) {
+            ctx.drawLinearGradient(gradient, start: mid, end: tip, options: [.drawsAfterEndLocation])
+        }
+        ctx.restoreGState()
+        UIColor.black.withAlphaComponent(0.12).setStroke()
+        flap.lineWidth = 0.75
+        flap.stroke()
     }
 }

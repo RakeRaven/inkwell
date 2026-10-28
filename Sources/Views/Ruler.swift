@@ -17,6 +17,10 @@ final class RulerView: UIView, UIGestureRecognizerDelegate {
 
     private var start: (middle: CGPoint, angle: CGFloat)?
     private var turning = false
+    /// Set while one finger drags an end round: -1 the left end, 1 the right.
+    private var grabbedEnd: CGFloat?
+    /// Ends you can grab to turn it with one finger.
+    private static let grip: CGFloat = 0.16
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -58,11 +62,24 @@ final class RulerView: UIView, UIGestureRecognizerDelegate {
         switch gesture.state {
         case .began:
             if start == nil { start = (middle, angle) }
+            let x = gesture.location(in: self).x / bounds.width
+            if gesture.numberOfTouches == 1, !turning, x < Self.grip || x > 1 - Self.grip {
+                grabbedEnd = x < 0.5 ? -1 : 1
+            }
         case .changed:
+            if let end = grabbedEnd {
+                // the grabbed end follows the finger round the middle
+                let p = gesture.location(in: parent)
+                var turn = atan2(p.y - middle.y, p.x - middle.x)
+                if end < 0 { turn += .pi }
+                place(at: middle, angle: Self.snapped(Self.wrapped(turn)))
+                return
+            }
             guard let start else { return }
             let t = gesture.translation(in: parent)
             place(at: CGPoint(x: start.middle.x + t.x, y: start.middle.y + t.y), angle: angle)
         default:
+            grabbedEnd = nil
             finish(gesture)
         }
     }
@@ -88,6 +105,10 @@ final class RulerView: UIView, UIGestureRecognizerDelegate {
         start = nil
         setNeedsDisplay()
         onMove?(middle, angle)
+    }
+
+    private static func wrapped(_ angle: CGFloat) -> CGFloat {
+        atan2(sin(angle), cos(angle))
     }
 
     /// Clicks onto every 15 degrees when close.
@@ -150,6 +171,19 @@ final class RulerView: UIView, UIGestureRecognizerDelegate {
             eighth += 1
         }
         ctx.strokePath()
+
+        // grips at both ends for turning it with one finger
+        let grip = UIBezierPath()
+        for end in [bounds.width * Self.grip / 2, bounds.width * (1 - Self.grip / 2)] {
+            for dx: CGFloat in [-5, 0, 5] {
+                grip.move(to: CGPoint(x: end + dx, y: bounds.midY - 9))
+                grip.addLine(to: CGPoint(x: end + dx, y: bounds.midY + 9))
+            }
+        }
+        Theme.uiAccent.withAlphaComponent(0.45).setStroke()
+        grip.lineWidth = 2
+        grip.lineCapStyle = .round
+        grip.stroke()
 
         let units: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 9, weight: .bold), .foregroundColor: ink.withAlphaComponent(0.6)]
         ("cm" as NSString).draw(at: CGPoint(x: bounds.width - 24, y: 19), withAttributes: units)

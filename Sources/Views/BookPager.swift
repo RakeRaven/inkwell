@@ -110,8 +110,17 @@ struct PageCurlPager: UIViewControllerRepresentable {
             gesture.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
             gesture.isEnabled = zoom?.zoomed != true
         }
-        zoom?.onZoomedChange = { [weak pager] zoomed in
+        // a thumb on the page's outer edge pushes it into an arch and over
+        let push = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pushed(_:)))
+        push.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+        push.maximumNumberOfTouches = 1
+        push.delegate = context.coordinator
+        for gesture in pager.gestureRecognizers { gesture.require(toFail: push) }
+        pager.view.addGestureRecognizer(push)
+        context.coordinator.push = push
+        zoom?.onZoomedChange = { [weak pager, weak push] zoomed in
             pager?.gestureRecognizers.forEach { $0.isEnabled = !zoomed }
+            push?.isEnabled = !zoomed
         }
         return pager
     }
@@ -131,9 +140,15 @@ struct PageCurlPager: UIViewControllerRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
         var parent: PageCurlPager
         weak var pager: UIPageViewController?
+        weak var push: UIPanGestureRecognizer?
+        /// A push turn in progress: the leaf, the pages it left, and where it goes.
+        private var turning: (flip: PageFlipView, old: [UIViewController], target: Int, forward: Bool)?
+        /// Edge band a thumb pushes from; the corners are left for folding.
+        private static let edge: CGFloat = 60
+        private static let cornerBand: CGFloat = 110
 
         init(_ parent: PageCurlPager) {
             self.parent = parent
@@ -166,6 +181,87 @@ struct PageCurlPager: UIViewControllerRepresentable {
             (content as? NoteCanvasView)?.prepareForSnapshot()
             (content as? PDFBookPage)?.prepareForSnapshot()
             return PageHost(index: index, content: content)
+        }
+
+        func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+            guard gesture === push, turning == nil, let pan = gesture as? UIPanGestureRecognizer, let view = pan.view else { return true }
+            let p = pan.location(in: view), t = pan.translation(in: view)
+            let start = CGPoint(x: p.x - t.x, y: p.y - t.y)
+            guard start.y > Self.cornerBand, start.y < view.bounds.height - Self.cornerBand, abs(t.x) > abs(t.y) else { return false }
+            if start.x > view.bounds.width - Self.edge, t.x < 0 { return target(forward: true) != nil }
+            if start.x < Self.edge, t.x > 0 { return target(forward: false) != nil }
+            return false
+        }
+
+        /// First page of the spread a push turn lands on.
+        private func target(forward: Bool) -> Int? {
+            guard let current = (pager?.viewControllers?.first as? PageHost)?.index else { return nil }
+            let step = parent.spread ? 2 : 1
+            let next = current + (forward ? step : -step)
+            return next >= 0 && next <= last ? next : nil
+        }
+
+        @objc func pushed(_ gesture: UIPanGestureRecognizer) {
+            guard let pager, let view = pager.view else { return }
+            switch gesture.state {
+            case .began:
+                let forward = gesture.translation(in: view).x < 0
+                guard let target = target(forward: forward) else { return }
+                startTurn(to: target, forward: forward, in: pager)
+            case .changed:
+                guard let turning else { return }
+                let travel = gesture.translation(in: view).x * (turning.forward ? -1 : 1)
+                let leafWidth = parent.spread ? view.bounds.width / 2 : view.bounds.width
+                turning.flip.setProgress(travel / (leafWidth * 1.15))
+            default:
+                guard let turning else { return }
+                let speed = gesture.velocity(in: view).x * (turning.forward ? -1 : 1)
+                let done = gesture.state == .ended && (turning.flip.progress > 0.32 || (speed > 500 && turning.flip.progress > 0.06))
+                let left = done ? 1 - turning.flip.progress : turning.flip.progress
+                turning.flip.animate(to: done ? 1 : 0, duration: 0.15 + 0.45 * Double(left)) { [weak self, weak pager] in
+                    guard let self else { return }
+                    if done {
+                        self.parent.index = min(turning.target, max(self.parent.count - 1, 0))
+                    } else {
+                        pager?.setViewControllers(turning.old, direction: .forward, animated: false)
+                    }
+                    turning.flip.removeFromSuperview()
+                    self.turning = nil
+                }
+            }
+        }
+
+        /// Puts the new pages in place behind a picture of the old ones, then builds the leaf from both.
+        private func startTurn(to target: Int, forward: Bool, in pager: UIPageViewController) {
+            let view: UIView = pager.view
+            let old = pager.viewControllers ?? []
+            let size = view.bounds.size
+            let oldImage = PageFlipView.snapshot(view)
+            let cover = UIImageView(image: oldImage)
+            cover.frame = view.bounds
+            view.addSubview(cover)
+            pager.setViewControllers(hosts(at: target), direction: forward ? .forward : .reverse, animated: false)
+            view.layoutIfNeeded()
+            let newImage = PageFlipView.compose(size: size, (pager.viewControllers ?? []).map { host in
+                (PageFlipView.snapshot(host.view, afterUpdates: true), host.view.convert(host.view.bounds, to: view))
+            })
+            let flip: PageFlipView
+            if parent.spread {
+                let left = CGRect(x: 0, y: 0, width: size.width / 2, height: size.height)
+                let right = CGRect(x: size.width / 2, y: 0, width: size.width / 2, height: size.height)
+                // a leaf's front is a right-hand page and its back the next left-hand one
+                let (lower, upper) = forward ? (oldImage, newImage) : (newImage, oldImage)
+                let under = PageFlipView.compose(size: size, [(PageFlipView.crop(lower, to: left), left), (PageFlipView.crop(upper, to: right), right)])
+                flip = PageFlipView(frame: view.bounds, under: under, leaf: right,
+                                    front: PageFlipView.crop(lower, to: right), back: PageFlipView.crop(upper, to: left),
+                                    backColor: .white, forward: forward)
+            } else {
+                flip = PageFlipView(frame: view.bounds, under: forward ? newImage : oldImage, leaf: view.bounds,
+                                    front: forward ? oldImage : newImage, back: nil, backColor: .white, forward: forward)
+            }
+            view.addSubview(flip)
+            cover.removeFromSuperview()
+            turning = (flip, old, target, forward)
         }
 
         func pageViewController(_ pager: UIPageViewController, viewControllerBefore vc: UIViewController) -> UIViewController? {

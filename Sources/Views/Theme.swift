@@ -42,11 +42,26 @@ final class Appearance {
 
     private(set) var accent: AccentTheme
     private(set) var scheme: ColorSchemeChoice
+    private(set) var pageTurn: PageTurnStyle
+    /// Opening a notebook swings its cover open and leafs through to your page.
+    private(set) var openAnimation: Bool
 
     private init() {
         let defaults = UserDefaults.standard
         accent = AccentTheme(rawValue: defaults.string(forKey: "accent") ?? "") ?? .plum
         scheme = ColorSchemeChoice(rawValue: defaults.string(forKey: "colorScheme") ?? "") ?? .system
+        pageTurn = PageTurnStyle(rawValue: defaults.string(forKey: "pageTurn") ?? "") ?? .flip
+        openAnimation = defaults.object(forKey: "openAnimation") as? Bool ?? true
+    }
+
+    func setPageTurn(_ style: PageTurnStyle) {
+        pageTurn = style
+        UserDefaults.standard.set(style.rawValue, forKey: "pageTurn")
+    }
+
+    func setOpenAnimation(_ on: Bool) {
+        openAnimation = on
+        UserDefaults.standard.set(on, forKey: "openAnimation")
     }
 
     func setAccent(_ accent: AccentTheme) {

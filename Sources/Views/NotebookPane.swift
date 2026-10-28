@@ -28,6 +28,8 @@ final class NotesSession {
     var askingURL = false
     var urlText = "https://"
     var message: String?
+    /// Plays once when the notebook opens.
+    var opening: OpeningLeaves?
 
     init(store: NotebookStore) {
         self.store = store
@@ -82,6 +84,16 @@ struct NotebookPane: View {
 
     var body: some View {
         pageView
+            .overlay {
+                if let opening = session.opening {
+                    GeometryReader { geo in
+                        OpeningFlip(leaves: opening, book: bookMode ? BookLayout(page: store.notebook.size(of: pages[index]), space: geo.size) : nil) {
+                            session.opening = nil
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
             .overlay(alignment: .top) {
                 if let hint {
                     Text(hint)
