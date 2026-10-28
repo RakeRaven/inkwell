@@ -13,6 +13,8 @@ struct NoteCanvas: UIViewRepresentable {
     @Binding var convertMode: Bool
     let handle: CanvasHandle
     let onOpenLink: (NoteLink) -> Void
+    /// Swipe by -1/+1 page; returns whether the page turned.
+    let onSwipe: (Int) -> Bool
 
     func makeUIView(context: Context) -> NoteCanvasView {
         let view = NoteCanvasView()
@@ -26,8 +28,9 @@ struct NoteCanvas: UIViewRepresentable {
         view.onEditPage = { [store] change in store.update(id, change) }
         view.onLinkTap = onOpenLink
         view.onConvertDone = { convertMode = false }
+        view.onSwipe = onSwipe
         view.convertMode = convertMode
-        view.show(page, paper: store.notebook.paper) { store.drawing(for: id) }
+        view.show(page, paper: store.notebook.style(of: page), color: store.notebook.color(of: page)) { store.drawing(for: id) }
     }
 }
 
@@ -37,6 +40,7 @@ final class NoteCanvasView: UIView {
     var onEditPage: (((inout NotePage) -> Void) -> Void)?
     var onLinkTap: ((NoteLink) -> Void)?
     var onConvertDone: (() -> Void)?
+    var onSwipe: ((Int) -> Bool)?
 
     var convertMode = false {
         didSet {
@@ -57,7 +61,10 @@ final class NoteCanvasView: UIView {
     private var page: NotePage?
     private var boxViews: [UUID: UIView] = [:]
     private var fittedWidth: CGFloat = 0
+    private var fitScale: CGFloat = 1
     private var pendingMath: DispatchWorkItem?
+    private let swipeGate = SwipeGate()
+    private var pushDirection = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -81,6 +88,22 @@ final class NoteCanvasView: UIView {
         selectionGesture.isEnabled = false
         canvas.addGestureRecognizer(selectionGesture)
 
+        // one finger turns pages when fingers don't draw, two fingers when they do
+        for touches in [1, 2] {
+            for direction in [UISwipeGestureRecognizer.Direction.left, .right] {
+                let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
+                swipe.direction = direction
+                swipe.numberOfTouchesRequired = touches
+                swipe.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+                swipe.delegate = swipeGate
+                canvas.addGestureRecognizer(swipe)
+            }
+        }
+        swipeGate.canBegin = { [weak self] swipe in
+            guard let self, !self.convertMode, self.canvas.zoomScale <= self.fitScale * 1.05 else { return false }
+            return swipe.numberOfTouchesRequired == 2 || self.ink.pencilOnly
+        }
+
         ink.onChange = { [weak self] drawing in
             self?.onDrawingChange?(drawing)
             self?.scheduleMath()
@@ -97,16 +120,32 @@ final class NoteCanvasView: UIView {
         fatalError("init(coder:) is not supported")
     }
 
-    func show(_ page: NotePage, paper style: PaperStyle, drawing: () -> PKDrawing) {
+    func show(_ page: NotePage, paper style: PaperStyle, color: PaperColor, drawing: () -> PKDrawing) {
         if page.id != self.page?.id {
             ink.load(drawing())
             // undo steps belong to the previous page
             canvas.undoManager?.removeAllActions()
             canvas.setContentOffset(CGPoint(x: -canvas.contentInset.left, y: 0), animated: false)
+            if pushDirection != 0 {
+                let push = CATransition()
+                push.type = .push
+                push.subtype = pushDirection > 0 ? .fromRight : .fromLeft
+                push.duration = 0.25
+                push.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                layer.add(push, forKey: "pageTurn")
+                pushDirection = 0
+            }
         }
         self.page = page
         paper.style = style
+        paper.color = color
         rebuildOverlay()
+    }
+
+    @objc private func swiped(_ swipe: UISwipeGestureRecognizer) {
+        let delta = swipe.direction == .left ? 1 : -1
+        pushDirection = delta
+        if onSwipe?(delta) != true { pushDirection = 0 }
     }
 
     func addText(_ text: String) {
@@ -122,7 +161,7 @@ final class NoteCanvasView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil { canvas.becomeFirstResponder() }
+        if window != nil { ink.activate() }
     }
 
     override func layoutSubviews() {
@@ -130,6 +169,7 @@ final class NoteCanvasView: UIView {
         guard bounds.width > 0, bounds.width != fittedWidth else { return }
         fittedWidth = bounds.width
         let fit = bounds.width / notebookPageSize.width
+        fitScale = fit
         canvas.minimumZoomScale = fit * 0.5
         canvas.maximumZoomScale = fit * 4
         canvas.zoomScale = fit
@@ -370,64 +410,23 @@ final class NoteCanvasView: UIView {
     }
 }
 
-/// Ruled paper drawn in page coordinates.
-final class PaperView: UIView {
-    var style: PaperStyle = .lined {
-        didSet { if style != oldValue { setNeedsDisplay() } }
-    }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        backgroundColor = .white
-        contentMode = .redraw
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func draw(_ rect: CGRect) {
-        guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        let spacing: CGFloat = 40
-        let line = UIColor(red: 0.55, green: 0.7, blue: 0.9, alpha: 0.55)
-        switch style {
-        case .blank:
-            return
-        case .lined:
-            ctx.setStrokeColor(line.cgColor)
-            ctx.setLineWidth(1)
-            for y in stride(from: spacing * 2, to: bounds.height, by: spacing) {
-                ctx.move(to: CGPoint(x: 0, y: y))
-                ctx.addLine(to: CGPoint(x: bounds.width, y: y))
-            }
-            ctx.strokePath()
-        case .grid:
-            ctx.setStrokeColor(line.withAlphaComponent(0.3).cgColor)
-            ctx.setLineWidth(1)
-            for x in stride(from: spacing, to: bounds.width, by: spacing) {
-                ctx.move(to: CGPoint(x: x, y: 0))
-                ctx.addLine(to: CGPoint(x: x, y: bounds.height))
-            }
-            for y in stride(from: spacing, to: bounds.height, by: spacing) {
-                ctx.move(to: CGPoint(x: 0, y: y))
-                ctx.addLine(to: CGPoint(x: bounds.width, y: y))
-            }
-            ctx.strokePath()
-        case .dotted:
-            ctx.setFillColor(line.cgColor)
-            for x in stride(from: spacing, to: bounds.width, by: spacing) {
-                for y in stride(from: spacing, to: bounds.height, by: spacing) {
-                    ctx.fillEllipse(in: CGRect(x: x - 1.5, y: y - 1.5, width: 3, height: 3))
-                }
-            }
-        }
-    }
-}
-
 /// Only its subviews take touches; everything else falls through to the canvas.
 final class PassthroughView: UIView {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
         return hit === self ? nil : hit
+    }
+}
+
+/// Lets page swipes run alongside scrolling, but only when allowed.
+final class SwipeGate: NSObject, UIGestureRecognizerDelegate {
+    var canBegin: (UISwipeGestureRecognizer) -> Bool = { _ in true }
+
+    func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        (gesture as? UISwipeGestureRecognizer).map(canBegin) ?? true
+    }
+
+    func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
     }
 }

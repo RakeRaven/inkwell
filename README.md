@@ -4,15 +4,21 @@ Personal, open-source iPad note-taking app: handwritten notebooks, a PDF/EPUB re
 
 ## Features
 
-- **Library**: notebooks, PDFs and EPUBs in one grid. Import from Files, rename and delete from the context menu.
-- **Notebooks**: paged, zoomable PencilKit canvas with blank/lined/grid/dotted paper. Tapping `>` on the last page adds a new one.
+- **Library**: notebooks, PDFs and EPUBs in one grid. Import from Files, rename, change cover and delete from the context menu.
+- **Notebooks**: paged, zoomable PencilKit canvas. Swipe left/right to turn pages (one finger, or two when finger drawing is on). Tapping `+` on the last page adds a new one.
+  - **Paper**: blank, ruled (normal/narrow/wide/with margin), double line, handwriting, grid, fine grid, dotted, Cornell and music, on white, cream, yellow or dark paper. Set per page or for the whole notebook; new pages copy the page before them.
+  - **Covers**: colour, pattern (plain, spine, stripes, dots, grid) or your own photo, set when creating the notebook or later. No cover shows the first page instead.
+- **Remembers where you left off**: the page or chapter, side notes, annotate mode and divider position, per document or notebook.
+- **Focus mode**: the expand button hides the title bar, pane bars and status bar. The small button in the corner brings them back.
 - **Reader**: open a PDF or EPUB on its own. The pencil menu (top right) gives you:
   - **Annotate PDF**: write straight on the pages (Pencil draws, fingers scroll).
   - **Notes on the Side**: opens a companion notebook beside the document, with a draggable divider.
   - **Export Annotated PDF**: a copy with your ink burned in.
 - **Links**: with notes on the side, the link button in the notes bar pins a chip to the current PDF page, the PDF chapter (from the outline) or the EPUB chapter. Tapping a chip jumps the reader there (and opens the document if it's closed). The reader's bar shows which note pages link to the page you're on. Long-press a chip to remove it.
+- **Pens**: fountain, ball and brush pens, pencil, highlighter, eraser (whole strokes or pixels) and lasso. Each pen keeps its own four colours (pick a custom one to replace the selected swatch) and three sizes.
+- **Toolbar**: a thin floating strip that fades while you write and comes back when you pause. Fold it into a pill with the chevron or a Pencil Pro squeeze, move it to the bottom, or undock to Apple's tool picker from its `...` menu (redock from the pencil menu).
 - **Pencil and touch**:
-  - Tool picker with Pencil double-tap and Pencil Pro squeeze, both handled by PencilKit.
+  - Pencil double-tap follows your system setting (switch to eraser, previous tool, or show the strip).
   - Two-finger tap to undo, three-finger tap to redo.
   - **Scribble to erase**: zigzag over ink or text boxes and they're deleted (undoable).
   - **Live math**: write something like `12 × 4 + 3 =` and the answer appears after the `=`. It updates when you change the numbers and disappears when you erase the `=`.

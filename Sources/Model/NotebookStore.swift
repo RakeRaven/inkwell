@@ -46,14 +46,33 @@ final class NotebookStore {
         scheduleSave()
     }
 
-    func setPaper(_ paper: PaperStyle) {
-        notebook.paper = paper
+    /// Sets one page's paper, or every page's when `page` is nil.
+    func setPaper(_ style: PaperStyle, color: PaperColor, page: UUID?) {
+        if let page {
+            update(page) {
+                $0.paper = style
+                $0.paperColor = color
+            }
+            return
+        }
+        notebook.paper = style
+        notebook.paperColor = color
+        for i in notebook.pages.indices {
+            notebook.pages[i].paper = nil
+            notebook.pages[i].paperColor = nil
+        }
         scheduleSave()
     }
 
+    /// New pages take the paper of the page they follow.
     func addPage(after index: Int) -> Int {
         let at = min(index + 1, notebook.pages.count)
-        notebook.pages.insert(NotePage(), at: at)
+        var page = NotePage()
+        if notebook.pages.indices.contains(index) {
+            page.paper = notebook.pages[index].paper
+            page.paperColor = notebook.pages[index].paperColor
+        }
+        notebook.pages.insert(page, at: at)
         scheduleSave()
         return at
     }

@@ -10,6 +10,7 @@ struct LinkOption: Identifiable {
 struct NotebookPane: View {
     let store: NotebookStore
     @Binding var pageIndex: Int
+    let showsBar: Bool
     let linkOptions: [LinkOption]
     let onOpenLink: (NoteLink) -> Void
 
@@ -18,6 +19,8 @@ struct NotebookPane: View {
     @State private var confirmDelete = false
     @State private var addingText = false
     @State private var newText = ""
+    @State private var choosingPaper = false
+    @State private var allPages = false
 
     private var pages: [NotePage] { store.notebook.pages }
     private var index: Int { min(max(pageIndex, 0), pages.count - 1) }
@@ -25,9 +28,11 @@ struct NotebookPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbar
-            Divider()
-            NoteCanvas(store: store, page: pages[index], convertMode: $convertMode, handle: handle, onOpenLink: onOpenLink)
+            if showsBar {
+                toolbar
+                Divider()
+            }
+            NoteCanvas(store: store, page: pages[index], convertMode: $convertMode, handle: handle, onOpenLink: onOpenLink, onSwipe: swipe)
                 .overlay(alignment: .top) {
                     if convertMode {
                         Text("Drag over handwriting to turn it into text")
@@ -50,6 +55,32 @@ struct NotebookPane: View {
             }
             Button("Cancel", role: .cancel) { newText = "" }
         }
+        .onChange(of: allPages) { _, all in
+            guard all else { return }
+            let page = pages[index]
+            store.setPaper(store.notebook.style(of: page), color: store.notebook.color(of: page), page: nil)
+        }
+    }
+
+    private func swipe(_ delta: Int) -> Bool {
+        let next = index + delta
+        guard pages.indices.contains(next) else { return false }
+        pageIndex = next
+        return true
+    }
+
+    private var paperPicker: some View {
+        PaperPicker(
+            style: Binding(get: { store.notebook.style(of: pages[index]) }, set: { setPaper($0, store.notebook.color(of: pages[index])) }),
+            color: Binding(get: { store.notebook.color(of: pages[index]) }, set: { setPaper(store.notebook.style(of: pages[index]), $0) }),
+            allPages: $allPages
+        )
+        .padding()
+        .frame(width: 400)
+    }
+
+    private func setPaper(_ style: PaperStyle, _ color: PaperColor) {
+        store.setPaper(style, color: color, page: allPages ? nil : pages[index].id)
     }
 
     private var toolbar: some View {
@@ -70,13 +101,8 @@ struct NotebookPane: View {
             Button { addingText = true } label: { Image(systemName: "textformat") }
             Toggle(isOn: $convertMode) { Image(systemName: "text.viewfinder") }
                 .toggleStyle(.button)
-            Menu {
-                Picker("Paper", selection: Binding(get: { store.notebook.paper }, set: { store.setPaper($0) })) {
-                    ForEach(PaperStyle.allCases, id: \.self) { Text($0.rawValue.capitalized) }
-                }
-            } label: {
-                Image(systemName: "doc.plaintext")
-            }
+            Button { choosingPaper = true } label: { Image(systemName: "doc.plaintext") }
+                .popover(isPresented: $choosingPaper) { paperPicker }
             Divider().frame(height: 22)
             Button { pageIndex = index - 1 } label: { Image(systemName: "chevron.left") }
                 .disabled(index == 0)

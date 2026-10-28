@@ -9,6 +9,8 @@ struct LibraryView: View {
     @State private var newTitle = ""
     @State private var deleting: LibraryItem?
     @State private var message: String?
+    @State private var creating = false
+    @State private var coverItem: LibraryItem?
 
     private var sortedItems: [LibraryItem] {
         library.items.sorted { $0.modified > $1.modified }
@@ -28,6 +30,11 @@ struct LibraryView: View {
                                 } label: {
                                     Label("Rename", systemImage: "pencil")
                                 }
+                                if item.kind == .notebook {
+                                    Button { coverItem = item } label: {
+                                        Label("Change Cover", systemImage: "book.closed")
+                                    }
+                                }
                                 Button(role: .destructive) { deleting = item } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
@@ -45,7 +52,7 @@ struct LibraryView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button { importing = true } label: { Label("Import", systemImage: "square.and.arrow.down") }
-                    Button { path.append(library.createNotebook(title: "Untitled Notebook")) } label: {
+                    Button { creating = true } label: {
                         Label("New Notebook", systemImage: "square.and.pencil")
                     }
                 }
@@ -63,6 +70,10 @@ struct LibraryView: View {
                 }
             }
             .navigationDestination(for: LibraryItem.self) { WorkspaceView(item: $0) }
+            .sheet(isPresented: $creating) {
+                NewNotebookSheet { path.append($0) }
+            }
+            .sheet(item: $coverItem) { CoverSheet(item: $0) }
             .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField("Title", text: $newTitle)
                 Button("Save") {
@@ -91,6 +102,7 @@ private struct LibraryCell: View {
     @Environment(Library.self) private var library
     let item: LibraryItem
     @State private var thumbnail: UIImage?
+    @State private var coverPhoto: UIImage?
 
     private var icon: String {
         switch item.kind {
@@ -104,7 +116,10 @@ private struct LibraryCell: View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemBackground))
-                if let thumbnail {
+                if let cover = item.cover {
+                    CoverView(cover: cover, title: item.title, photo: coverPhoto)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                } else if let thumbnail {
                     Image(uiImage: thumbnail)
                         .resizable()
                         .scaledToFit()
@@ -132,7 +147,14 @@ private struct LibraryCell: View {
                 .foregroundStyle(.secondary)
         }
         .task(id: item.modified) {
+            guard item.cover == nil else { return }
             thumbnail = library.thumbnail(for: item, size: CGSize(width: 340, height: 472))
+        }
+        .task(id: item.cover) {
+            coverPhoto = library.coverPhoto(for: item)
+            if item.cover == nil, thumbnail == nil {
+                thumbnail = library.thumbnail(for: item, size: CGSize(width: 340, height: 472))
+            }
         }
     }
 }

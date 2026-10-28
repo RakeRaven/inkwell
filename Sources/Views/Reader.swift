@@ -62,45 +62,52 @@ struct Backlink: Identifiable {
 struct ReaderPane: View {
     let model: ReaderModel
     let annotating: Bool
+    let showsBar: Bool
     let backlinks: [Backlink]
     let onBacklink: (Int) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 18) {
-                Text(location)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                if !backlinks.isEmpty {
-                    Menu {
-                        ForEach(backlinks) { link in
-                            Button("Note page \(link.notePage + 1)") { onBacklink(link.notePage) }
-                        }
-                    } label: {
-                        Label("\(backlinks.count)", systemImage: "link")
-                    }
-                }
-                if !model.chapters.isEmpty {
-                    Menu {
-                        ForEach(Array(model.chapters.enumerated()), id: \.offset) { _, chapter in
-                            Button(chapter.title) { model.state.jump = PageJump(page: chapter.page) }
-                        }
-                    } label: {
-                        Image(systemName: "list.bullet")
-                    }
-                }
-                if let book = model.epub {
-                    chapterControls(book)
-                }
+            if showsBar {
+                bar
+                Divider()
             }
-            .padding(.horizontal)
-            .frame(height: 44)
-            .background(.bar)
-            Divider()
             content
         }
+    }
+
+    private var bar: some View {
+        HStack(spacing: 18) {
+            Text(location)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+            if !backlinks.isEmpty {
+                Menu {
+                    ForEach(backlinks) { link in
+                        Button("Note page \(link.notePage + 1)") { onBacklink(link.notePage) }
+                    }
+                } label: {
+                    Label("\(backlinks.count)", systemImage: "link")
+                }
+            }
+            if !model.chapters.isEmpty {
+                Menu {
+                    ForEach(Array(model.chapters.enumerated()), id: \.offset) { _, chapter in
+                        Button(chapter.title) { model.state.jump = PageJump(page: chapter.page) }
+                    }
+                } label: {
+                    Image(systemName: "list.bullet")
+                }
+            }
+            if let book = model.epub {
+                chapterControls(book)
+            }
+        }
+        .padding(.horizontal)
+        .frame(height: 44)
+        .background(.bar)
     }
 
     @ViewBuilder
@@ -173,7 +180,9 @@ struct PDFReader: UIViewRepresentable {
         coordinator.setAnnotating(annotating)
         if let jump = state.jump, jump.id != coordinator.lastJump, let page = document.page(at: jump.page) {
             coordinator.lastJump = jump.id
-            DispatchQueue.main.async { view.go(to: page) }
+            // a fresh PDFView needs a layout pass before it can scroll
+            let delay = view.window == nil ? 0.3 : 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { view.go(to: page) }
         }
     }
 
@@ -212,7 +221,7 @@ struct PDFReader: UIViewRepresentable {
             let key = String(page.document?.index(for: page) ?? 0)
             let ink = InkController()
             // fingers keep scrolling the PDF
-            ink.canvas.drawingPolicy = .pencilOnly
+            ink.fingerAllowed = false
             ink.canvas.isScrollEnabled = false
             ink.load(annotations.drawing(key))
             ink.onChange = { [weak self] drawing in self?.annotations.set(drawing, for: key) }
@@ -226,7 +235,7 @@ struct PDFReader: UIViewRepresentable {
             view?.isInMarkupMode = on
             for ink in inks.values { ink.canvas.isUserInteractionEnabled = on }
             if on, let page = view?.currentPage {
-                inks[page]?.canvas.becomeFirstResponder()
+                inks[page]?.activate()
             } else {
                 for ink in inks.values { ink.canvas.resignFirstResponder() }
             }

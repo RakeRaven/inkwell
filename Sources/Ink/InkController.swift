@@ -1,7 +1,7 @@
 import PencilKit
 import UIKit
 
-/// Owns one PKCanvasView: shared tool picker, finger-tap undo/redo, and scribble-to-erase.
+/// Owns one PKCanvasView: shared tools, finger-tap undo/redo, and scribble-to-erase.
 final class InkController: NSObject, PKCanvasViewDelegate {
     static let toolPicker = PKToolPicker()
 
@@ -11,6 +11,10 @@ final class InkController: NSObject, PKCanvasViewDelegate {
     /// Whether a scribble over this area would erase non-ink content (e.g. text boxes).
     var extrasHit: ((CGRect) -> Bool)?
     var eraseExtras: ((CGRect) -> Void)?
+    /// False keeps fingers for scrolling whatever the settings say (PDF pages).
+    var fingerAllowed = true {
+        didSet { applyTools() }
+    }
 
     private var suppress = false
     private var strokeCount = 0
@@ -22,9 +26,6 @@ final class InkController: NSObject, PKCanvasViewDelegate {
         canvas.isOpaque = false
         // pages are white paper, so keep ink colors un-inverted in dark mode
         canvas.overrideUserInterfaceStyle = .light
-        canvas.tool = Self.toolPicker.selectedTool
-        Self.toolPicker.addObserver(canvas)
-        Self.toolPicker.setVisible(true, forFirstResponder: canvas)
         canvas.drawingGestureRecognizer.addTarget(self, action: #selector(drawingGesture(_:)))
 
         let undo = UITapGestureRecognizer(target: self, action: #selector(undoTap))
@@ -35,6 +36,35 @@ final class InkController: NSObject, PKCanvasViewDelegate {
             tap.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
             canvas.addGestureRecognizer(tap)
         }
+        InkTools.shared.register(self)
+        applyTools()
+    }
+
+    /// Picks up the current pen, or hands the canvas to Apple's tool picker when undocked.
+    func applyTools() {
+        let tools = InkTools.shared
+        let picker = Self.toolPicker
+        if tools.systemPicker {
+            picker.addObserver(canvas)
+            picker.setVisible(true, forFirstResponder: canvas)
+            canvas.tool = picker.selectedTool
+            canvas.drawingPolicy = fingerAllowed ? .default : .pencilOnly
+        } else {
+            picker.setVisible(false, forFirstResponder: canvas)
+            picker.removeObserver(canvas)
+            canvas.tool = tools.tool
+            canvas.drawingPolicy = fingerAllowed && tools.fingerDraws ? .anyInput : .pencilOnly
+        }
+    }
+
+    /// Whether fingers are free for gestures instead of drawing.
+    var pencilOnly: Bool {
+        canvas.drawingPolicy == .pencilOnly || (canvas.drawingPolicy == .default && UIPencilInteraction.prefersPencilOnlyDrawing)
+    }
+
+    func activate() {
+        InkTools.shared.active = self
+        if !canvas.isFirstResponder { canvas.becomeFirstResponder() }
     }
 
     /// Shows a drawing without notifying or recording undo.
@@ -62,10 +92,19 @@ final class InkController: NSObject, PKCanvasViewDelegate {
         onChange?(canvasView.drawing)
 
         let replaying = canvasView.undoManager.map { $0.isUndoing || $0.isRedoing } ?? false
-        if let added, !replaying, InkAnalyzer.isScribble(added) {
+        if let added, !replaying, added.ink.inkType != .marker, InkAnalyzer.isScribble(added) {
             // let PencilKit finish registering the stroke before touching undo
             DispatchQueue.main.async { [weak self] in self?.eraseScribble(expectedCount: strokes.count) }
         }
+    }
+
+    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        InkTools.shared.active = self
+        InkTools.shared.strokeBegan()
+    }
+
+    func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+        InkTools.shared.strokeEnded()
     }
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
@@ -93,10 +132,8 @@ final class InkController: NSObject, PKCanvasViewDelegate {
     }
 
     @objc private func drawingGesture(_ gesture: UIGestureRecognizer) {
-        // whichever canvas the pencil touches gets the tool picker
-        if gesture.state == .began, !canvas.isFirstResponder {
-            canvas.becomeFirstResponder()
-        }
+        // whichever canvas the pencil touches gets the tools and undo
+        if gesture.state == .began { activate() }
     }
 
     @objc private func undoTap() {
