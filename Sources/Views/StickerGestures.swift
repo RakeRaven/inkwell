@@ -87,8 +87,13 @@ struct StickerGestures: UIViewRepresentable {
             parent.onTap(gesture.location(in: view))
         }
 
+        // only with each other, so the sheet's scroll view doesn't move along
         func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            true
+            other.view === gesture.view
+        }
+
+        func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            other.view is UIScrollView
         }
     }
 }

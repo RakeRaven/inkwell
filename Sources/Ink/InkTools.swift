@@ -112,6 +112,8 @@ final class InkTools {
     private(set) var atBottom = false
     /// Hold the pencil still at the end of a stroke to snap it into a shape.
     private(set) var holdShapes = true
+    /// PencilKit's ruler: two fingers move and turn it, strokes along its edge come out straight.
+    private(set) var ruler = false
     /// Strip folded into a small pill (grip button or Pencil squeeze).
     var collapsed = false
     private(set) var hiddenWhileDrawing = false
@@ -202,6 +204,7 @@ final class InkTools {
     func setAutoHide(_ on: Bool) { change { autoHide = on } }
     func setAtBottom(_ on: Bool) { change { atBottom = on } }
     func setHoldShapes(_ on: Bool) { change { holdShapes = on } }
+    func toggleRuler() { change { ruler.toggle() } }
 
     func undo() { active?.canvas.undoManager?.undo() }
     func redo() { active?.canvas.undoManager?.redo() }

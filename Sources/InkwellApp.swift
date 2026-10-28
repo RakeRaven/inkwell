@@ -4,6 +4,10 @@ import SwiftUI
 struct InkwellApp: App {
     @State private var library = Library()
 
+    init() {
+        CrashLog.start()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

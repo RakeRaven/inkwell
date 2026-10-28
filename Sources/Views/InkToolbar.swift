@@ -64,6 +64,13 @@ struct InkToolbar: View {
                 widthSlider
             }
             separator
+            Button { tools.toggleRuler() } label: {
+                Image(systemName: "ruler")
+                    .frame(width: 30, height: 30)
+                    .foregroundStyle(tools.ruler ? Theme.accent : Theme.ink)
+                    .background(tools.ruler ? Theme.accent.opacity(0.18) : .clear, in: Circle())
+            }
+            .accessibilityLabel("Ruler")
             Button { tools.undo() } label: { Image(systemName: "arrow.uturn.backward").frame(width: 28, height: 30) }
             Button { tools.redo() } label: { Image(systemName: "arrow.uturn.forward").frame(width: 28, height: 30) }
             menu

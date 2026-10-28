@@ -80,6 +80,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         didSet {
             guard bookMode != oldValue else { return }
             ink.fingerAllowed = !bookMode
+            // book pages are paper edge to edge, and a spread's blank end page stays white
+            backgroundColor = bookMode ? .white : Theme.uiPaper
             applyScrolling()
             fittedSize = .zero
             setNeedsLayout()
@@ -316,7 +318,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         guard bounds.width > 0, bounds.height > 0, bounds.size != fittedSize else { return }
         fittedSize = bounds.size
         let fit = bookMode
-            ? min(bounds.width / pageSize.width, bounds.height / pageSize.height) * 0.96
+            ? min(bounds.width / pageSize.width, bounds.height / pageSize.height)
             : bounds.width / pageSize.width
         fitScale = fit
         canvas.minimumZoomScale = fit * 0.5
@@ -764,6 +766,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         liveShape = nil
         shapesView.preview = nil
         editPage("Shape") { $0.shapes.append(live) }
+        // a fresh triangle opens its angles straight away
+        if live.kind == .polygon, live.points.count == 3 { selectShape(live.id) }
     }
 
     func insertShape(_ preset: ShapePreset) {
@@ -825,7 +829,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     private func selectShape(_ id: UUID) {
         guard let shape = page?.shapes.first(where: { $0.id == id }) else { return }
         if selectedShape == id, inspector != nil { return }
-        deselectShape()
+        deselectShape(animated: false)
         selectedShape = id
         let editor = ShapeEditor(shape: shape)
         editor.onCommit = { [weak self] in self?.commitShape($0) }
@@ -840,7 +844,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         presentInspector(for: shape, editor: editor)
     }
 
-    private func deselectShape() {
+    private func deselectShape(animated: Bool = true) {
         guard selectedShape != nil else { return }
         selectedShape = nil
         editor = nil
@@ -848,18 +852,24 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         handleViews.forEach { $0.removeFromSuperview() }
         handleViews = []
         if let inspector, inspector.presentingViewController != nil {
-            inspector.dismiss(animated: true)
+            inspector.dismiss(animated: animated)
         }
     }
 
     private func presentInspector(for shape: ShapeItem, editor: ShapeEditor) {
-        guard let presenter = viewController, presenter.presentedViewController == nil else { return }
+        // present from whatever is on top, unless something else is already showing there
+        guard var presenter = viewController else { return }
+        while let next = presenter.presentedViewController, !next.isBeingDismissed { presenter = next }
+        guard presenter.presentedViewController == nil || presenter.presentedViewController?.isBeingDismissed == true,
+              presenter.viewIfLoaded?.window != nil else { return }
         let host = UIHostingController(rootView: ShapeInspector(editor: editor))
         host.modalPresentationStyle = .popover
         host.preferredContentSize = CGSize(width: 340, height: shape.kind == .projectile || shape.kind == .graph ? 620 : 470)
         if let pop = host.popoverPresentationController {
             pop.sourceView = self
-            pop.sourceRect = overlay.convert(shape.bounds, to: self).intersection(bounds.insetBy(dx: 20, dy: 20))
+            let rect = overlay.convert(shape.bounds, to: self).intersection(bounds.insetBy(dx: 20, dy: 20))
+            let finite = !rect.isNull && rect.origin.x.isFinite && rect.origin.y.isFinite && rect.width.isFinite && rect.height.isFinite
+            pop.sourceRect = finite ? rect : CGRect(x: bounds.midX, y: bounds.midY, width: 1, height: 1)
             pop.permittedArrowDirections = [.left, .right, .up, .down]
             // the page stays live so handles can be dragged with the panel open
             pop.passthroughViews = [self]

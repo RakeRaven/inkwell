@@ -3,6 +3,27 @@ import PencilKit
 import SwiftUI
 import UIKit
 
+/// The pager sized to the paper itself, so the curl lifts only the page.
+/// Two pages side by side when that keeps them nearly as big as one.
+struct BookLayout {
+    let size: CGSize
+    let spread: Bool
+
+    init(page: CGSize, space: CGSize) {
+        let room = CGSize(width: space.width * 0.96, height: space.height * 0.96)
+        guard page.width > 0, page.height > 0, room.width > 0, room.height > 0 else {
+            size = space
+            spread = false
+            return
+        }
+        let single = min(room.width / page.width, room.height / page.height)
+        let double = min(room.width / (page.width * 2), room.height / page.height)
+        spread = double >= single * 0.8
+        let scale = spread ? double : single
+        size = CGSize(width: page.width * scale * (spread ? 2 : 1), height: page.height * scale)
+    }
+}
+
 /// Turns pages with a real page curl: drag to fold the page and hold it there,
 /// flick or drag past halfway to turn, let go early to drop it back.
 /// `spread` shows two pages side by side like an open book.
@@ -23,7 +44,7 @@ struct PageCurlPager: UIViewControllerRepresentable {
         pager.isDoubleSided = spread
         pager.dataSource = context.coordinator
         pager.delegate = context.coordinator
-        pager.view.backgroundColor = Theme.uiPaper
+        pager.view.backgroundColor = .clear
         context.coordinator.pager = pager
         pager.setViewControllers(context.coordinator.hosts(at: index), direction: .forward, animated: false)
         // fingers turn pages; the pencil keeps writing
@@ -131,7 +152,7 @@ final class PDFBookPage: UIView {
     init(page: PDFPage, annotations: DrawingStore, key: String) {
         self.page = page
         super.init(frame: .zero)
-        backgroundColor = Theme.uiPaper
+        backgroundColor = .clear
         paper.page = page
         addSubview(paper)
         ink.fingerAllowed = false
@@ -163,7 +184,7 @@ final class PDFBookPage: UIView {
         super.layoutSubviews()
         let box = page.bounds(for: .cropBox).size
         guard box.width > 0, box.height > 0 else { return }
-        let scale = min(bounds.width / box.width, bounds.height / box.height) * 0.96
+        let scale = min(bounds.width / box.width, bounds.height / box.height)
         let fitted = CGSize(width: box.width * scale, height: box.height * scale)
         paper.frame = CGRect(x: (bounds.width - fitted.width) / 2, y: (bounds.height - fitted.height) / 2, width: fitted.width, height: fitted.height)
         ink.canvas.transform = CGAffineTransform(scaleX: scale, y: scale)

@@ -84,6 +84,7 @@ final class InkController: NSObject, PKCanvasViewDelegate {
             picker.removeObserver(canvas)
             canvas.tool = tools.tool
             canvas.drawingPolicy = fingerAllowed && tools.fingerDraws ? .anyInput : .pencilOnly
+            canvas.isRulerActive = tools.ruler
         }
         // the picker only shows or hides when the first responder changes
         if usedSystemPicker != nil, usedSystemPicker != tools.systemPicker, canvas.isFirstResponder {

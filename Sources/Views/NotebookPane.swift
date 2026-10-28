@@ -53,8 +53,8 @@ struct NotebookPane: View {
     private var pageView: some View {
         if bookMode {
             GeometryReader { geo in
-                let spread = geo.size.width > geo.size.height * 1.1
-                PageCurlPager(count: pages.count, index: $pageIndex, spread: spread, makePage: { _ in
+                let book = BookLayout(page: store.notebook.size(of: pages[index]), space: geo.size)
+                PageCurlPager(count: pages.count, index: $pageIndex, spread: book.spread, makePage: { _ in
                     let view = NoteCanvasView()
                     view.bookMode = true
                     return view
@@ -67,7 +67,9 @@ struct NotebookPane: View {
                         session.handle.view = canvas
                     }
                 })
-                .id(spread)
+                .frame(width: book.size.width, height: book.size.height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .id(book.spread)
             }
         } else {
             NoteCanvas(store: store, page: pages[index], mode: $session.mode, handle: session.handle, onOpenLink: onOpenLink,
