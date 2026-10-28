@@ -72,7 +72,9 @@ struct ReaderPane: View {
                     let book = BookLayout(page: first?.bounds(for: .cropBox).size ?? .zero, space: geo.size)
                     PageCurlPager(count: pdf.pageCount, index: Binding(get: { model.state.pageIndex }, set: { model.state.pageIndex = $0 }),
                                   spread: book.spread, makePage: { i in
-                        PDFBookPage(page: pdf.page(at: i) ?? PDFPage(), annotations: model.annotations, key: String(i))
+                        let page = PDFBookPage(page: pdf.page(at: i) ?? PDFPage(), annotations: model.annotations, key: String(i))
+                        page.spine.edge = book.spread && i % 2 == 0 ? .right : .left
+                        return page
                     }, refresh: { view, _ in
                         (view as? PDFBookPage)?.annotating = annotating
                     })

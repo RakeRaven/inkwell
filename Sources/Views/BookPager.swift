@@ -24,6 +24,63 @@ struct BookLayout {
     }
 }
 
+/// One zoom and position for every page in book mode, so turning keeps the same view.
+final class BookZoom {
+    /// Times the fitted size.
+    private(set) var scale: CGFloat = 1
+    /// Middle of the view as a fraction of the page.
+    private(set) var center = CGPoint(x: 0.5, y: 0.5)
+    var zoomed: Bool { scale > 1.01 }
+    /// Page turning pauses while zoomed in, so fingers pan instead.
+    var onZoomedChange: ((Bool) -> Void)?
+    private let pages = NSHashTable<NoteCanvasView>.weakObjects()
+
+    func add(_ page: NoteCanvasView) {
+        pages.add(page)
+    }
+
+    func update(scale: CGFloat, center: CGPoint, from source: NoteCanvasView) {
+        let was = zoomed
+        self.scale = scale
+        self.center = center
+        for page in pages.allObjects where page !== source { page.applyBookZoom() }
+        if was != zoomed { onZoomedChange?(zoomed) }
+    }
+}
+
+/// Shadow along the binding, so a spread reads as two pages.
+final class SpineShade: UIView {
+    override class var layerClass: AnyClass { CAGradientLayer.self }
+
+    /// Which side of the page the binding is on.
+    var edge: UIRectEdge = .left {
+        didSet { update() }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        update()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    func place(in rect: CGRect) {
+        let width = min(36, rect.width * 0.08)
+        frame = CGRect(x: edge == .left ? rect.minX : rect.maxX - width, y: rect.minY, width: width, height: rect.height)
+    }
+
+    private func update() {
+        guard let gradient = layer as? CAGradientLayer else { return }
+        gradient.colors = [0.28, 0.08, 0].map { UIColor.black.withAlphaComponent($0).cgColor }
+        gradient.locations = [0, 0.18, 1]
+        gradient.startPoint = CGPoint(x: edge == .left ? 0 : 1, y: 0.5)
+        gradient.endPoint = CGPoint(x: edge == .left ? 1 : 0, y: 0.5)
+    }
+}
+
 /// Turns pages with a real page curl: drag to fold the page and hold it there,
 /// flick or drag past halfway to turn, let go early to drop it back.
 /// `spread` shows two pages side by side like an open book.
@@ -31,6 +88,7 @@ struct PageCurlPager: UIViewControllerRepresentable {
     let count: Int
     @Binding var index: Int
     let spread: Bool
+    var zoom: BookZoom?
     let makePage: (Int) -> UIView
     /// Refreshes the page on screen when its content changes.
     let refresh: (UIView, Int) -> Void
@@ -50,6 +108,10 @@ struct PageCurlPager: UIViewControllerRepresentable {
         // fingers turn pages; the pencil keeps writing
         for gesture in pager.gestureRecognizers {
             gesture.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+            gesture.isEnabled = zoom?.zoomed != true
+        }
+        zoom?.onZoomedChange = { [weak pager] zoomed in
+            pager?.gestureRecognizers.forEach { $0.isEnabled = !zoomed }
         }
         return pager
     }
@@ -148,6 +210,7 @@ final class PDFBookPage: UIView {
     let ink = InkController()
     private let page: PDFPage
     private let paper = PDFPageDrawing()
+    let spine = SpineShade()
 
     init(page: PDFPage, annotations: DrawingStore, key: String) {
         self.page = page
@@ -162,6 +225,7 @@ final class PDFBookPage: UIView {
         // same page-point coordinates as the scrolling reader, so ink matches in both
         ink.canvas.bounds = CGRect(origin: .zero, size: page.bounds(for: .cropBox).size)
         addSubview(ink.canvas)
+        addSubview(spine)
     }
 
     required init?(coder: NSCoder) {
@@ -189,6 +253,7 @@ final class PDFBookPage: UIView {
         paper.frame = CGRect(x: (bounds.width - fitted.width) / 2, y: (bounds.height - fitted.height) / 2, width: fitted.width, height: fitted.height)
         ink.canvas.transform = CGAffineTransform(scaleX: scale, y: scale)
         ink.canvas.center = CGPoint(x: paper.frame.midX, y: paper.frame.midY)
+        spine.place(in: paper.frame)
     }
 }
 

@@ -82,15 +82,51 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             ink.fingerAllowed = !bookMode
             // book pages are paper edge to edge, and a spread's blank end page stays white
             backgroundColor = bookMode ? .white : Theme.uiPaper
+            spine.isHidden = !bookMode
             applyScrolling()
             fittedSize = .zero
             setNeedsLayout()
         }
     }
 
+    /// Shared by the pages of a book so they zoom together.
+    weak var bookZoom: BookZoom? {
+        didSet { bookZoom?.add(self) }
+    }
+    let spine = SpineShade()
+    private var applyingBookZoom = false
+
     private func applyScrolling() {
-        canvas.isScrollEnabled = !bookMode && (mode == .draw || mode == .arrange)
-        canvas.pinchGestureRecognizer?.isEnabled = !bookMode && mode != .arrange
+        // a book page only pans once zoomed in, otherwise fingers turn pages
+        let pans = bookMode ? bookZoom?.zoomed == true : true
+        canvas.isScrollEnabled = pans && (mode == .draw || mode == .arrange)
+        canvas.pinchGestureRecognizer?.isEnabled = mode != .arrange
+    }
+
+    /// Takes the book's shared zoom and position.
+    func applyBookZoom() {
+        guard bookMode, let zoom = bookZoom, fitScale > 0 else { return }
+        applyingBookZoom = true
+        canvas.zoomScale = fitScale * zoom.scale
+        syncZoom()
+        let size = canvas.contentSize, inset = canvas.contentInset, view = canvas.bounds.size
+        let x = min(max(zoom.center.x * size.width - view.width / 2, -inset.left), max(size.width + inset.right - view.width, -inset.left))
+        let y = min(max(zoom.center.y * size.height - view.height / 2, -inset.top), max(size.height + inset.bottom - view.height, -inset.top))
+        canvas.contentOffset = CGPoint(x: x, y: y)
+        applyScrolling()
+        applyingBookZoom = false
+    }
+
+    private func reportBookZoom() {
+        guard bookMode, let zoom = bookZoom, !applyingBookZoom, fitScale > 0,
+              canvas.isZooming || canvas.isZoomBouncing || canvas.isDragging || canvas.isDecelerating else { return }
+        let size = canvas.contentSize
+        guard size.width > 0, size.height > 0 else { return }
+        let offset = canvas.contentOffset, view = canvas.bounds.size
+        zoom.update(scale: canvas.zoomScale / fitScale,
+                    center: CGPoint(x: (offset.x + view.width / 2) / size.width, y: (offset.y + view.height / 2) / size.height),
+                    from: self)
+        applyScrolling()
     }
 
     private let ink = InkController()
@@ -143,6 +179,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         canvas.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         canvas.contentInsetAdjustmentBehavior = .never
         addSubview(canvas)
+        spine.isHidden = true
+        addSubview(spine)
 
         for view in [paper, media, shapesView, overlay] as [UIView] {
             view.bounds = CGRect(origin: .zero, size: pageSize)
@@ -205,7 +243,11 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             self?.onDrawingChange?(drawing)
             self?.scheduleMath()
         }
-        ink.onZoom = { [weak self] in self?.syncZoom() }
+        ink.onZoom = { [weak self] in
+            self?.syncZoom()
+            self?.reportBookZoom()
+        }
+        ink.onScroll = { [weak self] in self?.reportBookZoom() }
         ink.extrasHit = { [weak self] area in
             guard let self else { return false }
             return !self.boxes(in: area).isEmpty || !self.shapes(in: area).isEmpty
@@ -315,16 +357,20 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        spine.place(in: bounds)
+        bringSubviewToFront(spine)
         guard bounds.width > 0, bounds.height > 0, bounds.size != fittedSize else { return }
         fittedSize = bounds.size
         let fit = bookMode
             ? min(bounds.width / pageSize.width, bounds.height / pageSize.height)
             : bounds.width / pageSize.width
         fitScale = fit
-        canvas.minimumZoomScale = fit * 0.5
+        // a book page never shrinks below the paper
+        canvas.minimumZoomScale = bookMode ? fit : fit * 0.5
         canvas.maximumZoomScale = fit * 4
         canvas.zoomScale = fit
         syncZoom()
+        applyBookZoom()
     }
 
     private func syncZoom() {

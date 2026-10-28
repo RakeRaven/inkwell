@@ -20,8 +20,8 @@ targets:
       path: Support/Info.plist
       properties:
         CFBundleDisplayName: Inkwell
-        CFBundleShortVersionString: "0.6.3"
-        CFBundleVersion: "10"
+        CFBundleShortVersionString: "0.6.4"
+        CFBundleVersion: "11"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

@@ -9,6 +9,7 @@ final class InkController: NSObject, PKCanvasViewDelegate {
     let canvas = PKCanvasView()
     var onChange: ((PKDrawing) -> Void)?
     var onZoom: (() -> Void)?
+    var onScroll: (() -> Void)?
     /// Whether a scribble over this area would erase non-ink content (e.g. text boxes).
     var extrasHit: ((CGRect) -> Bool)?
     var eraseExtras: ((CGRect) -> Void)?
@@ -158,6 +159,10 @@ final class InkController: NSObject, PKCanvasViewDelegate {
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         onZoom?()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        onScroll?()
     }
 
     private func eraseScribble(expectedCount: Int) {

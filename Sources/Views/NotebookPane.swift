@@ -44,6 +44,7 @@ struct NotebookPane: View {
     let bookMode: Bool
     let linkOptions: [LinkOption]
     let onOpenLink: (NoteLink) -> Void
+    @State private var bookZoom = BookZoom()
 
     private var store: NotebookStore { session.store }
     private var pages: [NotePage] { store.notebook.pages }
@@ -54,9 +55,11 @@ struct NotebookPane: View {
         if bookMode {
             GeometryReader { geo in
                 let book = BookLayout(page: store.notebook.size(of: pages[index]), space: geo.size)
-                PageCurlPager(count: pages.count, index: $pageIndex, spread: book.spread, makePage: { _ in
+                PageCurlPager(count: pages.count, index: $pageIndex, spread: book.spread, zoom: bookZoom, makePage: { i in
                     let view = NoteCanvasView()
                     view.bookMode = true
+                    view.bookZoom = bookZoom
+                    view.spine.edge = book.spread && i % 2 == 0 ? .right : .left
                     return view
                 }, refresh: { view, i in
                     guard let canvas = view as? NoteCanvasView, pages.indices.contains(i) else { return }
