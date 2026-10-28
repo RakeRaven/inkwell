@@ -13,7 +13,9 @@ final class ShapeEditor {
     }
 
     func apply(_ edit: (ShapeItem) -> ShapeItem) {
-        shape = edit(shape)
+        let edited = edit(shape)
+        guard edited != shape else { return }
+        shape = edited
         onCommit?(shape)
     }
 }
@@ -344,7 +346,11 @@ struct ShapeInspector: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Theme.ink)
                 .frame(width: 70, alignment: .leading)
-            TextField(name, value: Binding(get: { (value / step).rounded() * step }, set: { set(min(max($0, range.lowerBound), range.upperBound)) }),
+            // the field writes back its own rounded value when the shape redraws; only real changes count
+            TextField(name, value: Binding(get: { (value / step).rounded() * step }, set: { typed in
+                let clamped = min(max(typed, range.lowerBound), range.upperBound)
+                if abs(clamped - value) >= step / 2 { set(clamped) }
+            }),
                       format: .number.precision(.fractionLength(step < 1 ? (step < 0.1 ? 2 : 1) : 0)))
                 .keyboardType(.decimalPad)
                 .textFieldStyle(.roundedBorder)

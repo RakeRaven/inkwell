@@ -254,6 +254,9 @@ struct WorkspaceView: View {
         let size = notebook.size(of: first)
         let width: CGFloat = 520, height = width * size.height / max(size.width, 1)
         let paper = UIGraphicsImageRenderer(size: CGSize(width: width, height: height)).image { context in
+            // solid sheets, so leaves stacked under each other never show through
+            notebook.color(of: first).fill.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
             context.cgContext.scaleBy(x: width / size.width, y: height / size.height)
             PaperRenderer.draw(notebook.style(of: first), color: notebook.color(of: first), in: context.cgContext, size: size)
         }
@@ -261,7 +264,7 @@ struct WorkspaceView: View {
         if let design = item.cover {
             let view = CoverView(cover: design, title: item.title, photo: library.coverPhoto(for: item),
                                  ink: library.coverInk(for: item).map(CoverView.inkImage), stickerImages: library.coverStickers(for: item))
-                .frame(width: width, height: height)
+                .frame(width: width, height: width / 0.72)
             let renderer = ImageRenderer(content: view)
             renderer.scale = 2
             cover = renderer.uiImage

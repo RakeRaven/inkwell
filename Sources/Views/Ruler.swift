@@ -1,16 +1,24 @@
 import PencilKit
 import UIKit
 
-/// A see-through ruler lying on the page: centimetres along the top edge, inches along the bottom.
-/// One finger slides it, two fingers turn it, and pencil lines drawn against an edge come out straight.
+/// A see-through ruler lying over the notebook: centimetres along the top edge, inches along the bottom.
+/// It stays put while pages turn. One finger slides it, an end or two fingers turn it,
+/// and pencil lines drawn against an edge come out straight.
 final class RulerView: UIView, UIGestureRecognizerDelegate {
-    static let length: CGFloat = 1000
-    static let depth: CGFloat = 70
+    static let length: CGFloat = 760
+    static let depth: CGFloat = 64
     /// Page points per millimetre and per inch, from the same A4 scale as shape measurements.
     static let pointsPerMM = 0.1 / cmPerPoint
     static let pointsPerInch = 2.54 / cmPerPoint
+    /// The ruler on screen, for pages to straighten their lines against.
+    static weak var shared: RulerView?
 
-    /// Middle of the ruler and its turn (radians), in page points.
+    /// Screen points per page point, so the marks match the paper at its current zoom.
+    var pageScale: CGFloat = 1 {
+        didSet { if abs(pageScale - oldValue) > 0.001 { setNeedsDisplay() } }
+    }
+
+    /// Middle of the ruler and its turn (radians), in its host's points.
     private(set) var middle = CGPoint.zero
     private(set) var angle: CGFloat = 0
     var onMove: ((CGPoint, CGFloat) -> Void)?
@@ -143,9 +151,11 @@ final class RulerView: UIView, UIGestureRecognizerDelegate {
         let label: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: ink]
 
         // millimetres from the left end, along the top
+        let perMM = Self.pointsPerMM * pageScale, perInch = Self.pointsPerInch * pageScale
+        guard perMM > 0.5 else { return }
         var mm = 0
-        while CGFloat(mm) * Self.pointsPerMM < bounds.width - 4 {
-            let x = 4 + CGFloat(mm) * Self.pointsPerMM
+        while CGFloat(mm) * perMM < bounds.width - 4 {
+            let x = 4 + CGFloat(mm) * perMM
             let tick: CGFloat = mm % 10 == 0 ? 16 : mm % 5 == 0 ? 11 : 6
             ctx.move(to: CGPoint(x: x, y: 1))
             ctx.addLine(to: CGPoint(x: x, y: 1 + tick))
@@ -158,8 +168,8 @@ final class RulerView: UIView, UIGestureRecognizerDelegate {
         }
         // eighths of an inch along the bottom
         var eighth = 0
-        while CGFloat(eighth) * Self.pointsPerInch / 8 < bounds.width - 4 {
-            let x = 4 + CGFloat(eighth) * Self.pointsPerInch / 8
+        while CGFloat(eighth) * perInch / 8 < bounds.width - 4 {
+            let x = 4 + CGFloat(eighth) * perInch / 8
             let tick: CGFloat = eighth % 8 == 0 ? 16 : eighth % 4 == 0 ? 11 : eighth % 2 == 0 ? 8 : 5
             ctx.move(to: CGPoint(x: x, y: bounds.height - 1))
             ctx.addLine(to: CGPoint(x: x, y: bounds.height - 1 - tick))
@@ -199,34 +209,66 @@ final class RulerView: UIView, UIGestureRecognizerDelegate {
     }
 
     /// A stroke drawn along one edge, laid flat against that edge; nil when it wasn't following the ruler.
-    func straightened(_ stroke: PKStroke) -> PKStroke? {
+    /// `space` is the view the stroke's points are in (the page).
+    func straightened(_ stroke: PKStroke, in space: UIView) -> PKStroke? {
+        guard window != nil, space.window === window else { return nil }
         let points = stroke.path.map { $0.location.applying(stroke.transform) }
         guard points.count > 2 else { return nil }
-        let along = CGPoint(x: cos(angle), y: sin(angle))
-        let across = CGPoint(x: -sin(angle), y: cos(angle))
-        func local(_ p: CGPoint) -> CGPoint {
-            let d = CGPoint(x: p.x - middle.x, y: p.y - middle.y)
-            return CGPoint(x: d.x * along.x + d.y * along.y, y: d.x * across.x + d.y * across.y)
-        }
-        let locals = points.map(local)
-        let span = (locals.map(\.x).max() ?? 0) - (locals.map(\.x).min() ?? 0)
-        guard span > 20, locals.allSatisfy({ abs($0.x) < Self.length / 2 + 30 }) else { return nil }
-        let halfWidth = (stroke.path.first?.size.width ?? 2) / 2
-        for side: CGFloat in [-1, 1] {
-            let edge = side * Self.depth / 2
-            let near = locals.filter { abs($0.y - edge) < 24 && ($0.y - edge) * side > -12 }
+        let locals = points.map { space.convert($0, to: self) }
+        let xs = locals.map(\.x)
+        guard (xs.max() ?? 0) - (xs.min() ?? 0) > 20, locals.allSatisfy({ $0.x > -30 && $0.x < bounds.width + 30 }) else { return nil }
+        // page points to screen points, for the pen's width
+        let a = space.convert(CGPoint.zero, to: self), b = space.convert(CGPoint(x: 1, y: 0), to: self)
+        let halfWidth = (stroke.path.first?.size.width ?? 2) / 2 * hypot(b.x - a.x, b.y - a.y)
+        for (edge, outward) in [(CGFloat(0), CGFloat(-1)), (bounds.height, CGFloat(1))] {
+            let near = locals.filter { abs($0.y - edge) < 24 && ($0.y - edge) * outward > -12 }
             guard Double(near.count) >= Double(locals.count) * 0.9 else { continue }
             // sit just outside the edge, like a pen run along a real ruler
-            let line = edge + side * halfWidth
+            let line = edge + outward * halfWidth
             let flat = zip(stroke.path, locals).map { point, l -> PKStrokePoint in
-                let x = l.x
-                let p = CGPoint(x: middle.x + along.x * x + across.x * line, y: middle.y + along.y * x + across.y * line)
-                return PKStrokePoint(location: p, timeOffset: point.timeOffset, size: point.size, opacity: point.opacity,
-                                     force: point.force, azimuth: point.azimuth, altitude: point.altitude)
+                PKStrokePoint(location: convert(CGPoint(x: l.x, y: line), to: space), timeOffset: point.timeOffset, size: point.size,
+                              opacity: point.opacity, force: point.force, azimuth: point.azimuth, altitude: point.altitude)
             }
             let path = PKStrokePath(controlPoints: flat, creationDate: stroke.path.creationDate)
             return PKStroke(ink: stroke.ink, path: path, transform: .identity, mask: nil)
         }
         return nil
+    }
+}
+
+/// Holds the ruler above the notebook; touches anywhere else go through to the pages.
+struct RulerOverlay: UIViewRepresentable {
+    func makeUIView(context: Context) -> RulerHost { RulerHost() }
+    func updateUIView(_ view: RulerHost, context: Context) {}
+}
+
+final class RulerHost: PassthroughView {
+    private let ruler = RulerView()
+    private var placed = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        addSubview(ruler)
+        RulerView.shared = ruler
+        ruler.pageScale = InkTools.shared.rulerScale
+        ruler.onMove = { middle, angle in
+            InkTools.shared.rulerMiddle = middle
+            InkTools.shared.rulerAngle = angle
+        }
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width > 0 else { return }
+        var middle = placed ? ruler.middle : InkTools.shared.rulerMiddle ?? CGPoint(x: bounds.midX, y: bounds.midY)
+        // keep it on screen when the pane changes size
+        middle.x = min(max(middle.x, 40), bounds.width - 40)
+        middle.y = min(max(middle.y, 40), bounds.height - 40)
+        ruler.place(at: middle, angle: placed ? ruler.angle : InkTools.shared.rulerAngle)
+        placed = true
     }
 }

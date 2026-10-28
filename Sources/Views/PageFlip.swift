@@ -200,12 +200,14 @@ struct OpeningLeaves {
 /// Plays the opening over the notebook once, then gets out of the way.
 struct OpeningFlip: UIViewRepresentable {
     let leaves: OpeningLeaves
-    /// The book's open area, or nil for the whole pane.
+    /// The notebook's page size, to lay the leaves exactly over the page.
+    let page: CGSize
+    /// The book's open area, or nil when pages scroll.
     let book: BookLayout?
     let onDone: () -> Void
 
     func makeUIView(context: Context) -> OpeningFlipView {
-        OpeningFlipView(leaves: leaves, book: book, onDone: onDone)
+        OpeningFlipView(leaves: leaves, page: page, book: book, onDone: onDone)
     }
 
     func updateUIView(_ view: OpeningFlipView, context: Context) {}
@@ -213,12 +215,14 @@ struct OpeningFlip: UIViewRepresentable {
 
 final class OpeningFlipView: UIView {
     private let leaves: OpeningLeaves
+    private let page: CGSize
     private let book: BookLayout?
     private let onDone: () -> Void
     private var started = false
 
-    init(leaves: OpeningLeaves, book: BookLayout?, onDone: @escaping () -> Void) {
+    init(leaves: OpeningLeaves, page: CGSize, book: BookLayout?, onDone: @escaping () -> Void) {
         self.leaves = leaves
+        self.page = page
         self.book = book
         self.onDone = onDone
         super.init(frame: .zero)
@@ -233,11 +237,27 @@ final class OpeningFlipView: UIView {
         super.layoutSubviews()
         guard !started, bounds.width > 0, bounds.height > 0 else { return }
         started = true
-        var area = bounds
+        // exactly where the page sits, so the cover keeps its shape
+        var area: CGRect
+        var closedSide: CGRect?
         if let book {
             area = CGRect(x: (bounds.width - book.size.width) / 2, y: (bounds.height - book.size.height) / 2,
                           width: book.size.width, height: book.size.height)
-            if book.spread { area = CGRect(x: area.midX, y: area.minY, width: area.width / 2, height: area.height) }
+            if book.spread {
+                closedSide = CGRect(x: area.minX, y: area.minY, width: area.width / 2, height: area.height)
+                area = CGRect(x: area.midX, y: area.minY, width: area.width / 2, height: area.height)
+            }
+        } else {
+            let height = bounds.width * page.height / max(page.width, 1)
+            area = CGRect(x: 0, y: max(0, (bounds.height - height) / 2), width: bounds.width, height: height)
+        }
+        // a closed book has nothing on its left until the cover swings over
+        var blank: UIView?
+        if let closedSide {
+            let view = UIView(frame: closedSide)
+            view.backgroundColor = Theme.uiPaper
+            addSubview(view)
+            blank = view
         }
         // bottom of the stack first, so the cover ends up on top
         var flips: [(PageFlipView, delay: Double, duration: Double)] = []
@@ -253,6 +273,11 @@ final class OpeningFlipView: UIView {
                                     backColor: UIColor(white: 0.92, alpha: 1), forward: true, push: 0)
             addSubview(flip)
             flips.append((flip, 0.1, 0.85))
+        }
+        if let blank {
+            // gone once the first leaf is standing up
+            let first = flips.last.map { $0.delay + $0.duration * 0.6 } ?? 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + first) { blank.removeFromSuperview() }
         }
         var remaining = flips.count
         for (flip, delay, duration) in flips {

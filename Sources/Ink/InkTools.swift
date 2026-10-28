@@ -128,9 +128,13 @@ final class InkTools {
             for ink in canvases.allObjects { ink.onToolsChanged?() }
         }
     }
-    /// Where the ruler lies on the page, kept while turning pages.
+    /// Where the ruler lies over the notebook.
     @ObservationIgnored var rulerMiddle: CGPoint?
     @ObservationIgnored var rulerAngle: CGFloat = 0
+    /// Screen points per page point on the page being written on.
+    @ObservationIgnored var rulerScale: CGFloat = 1 {
+        didSet { RulerView.shared?.pageScale = rulerScale }
+    }
 
     private init() {
         guard let data = UserDefaults.standard.data(forKey: Self.key),

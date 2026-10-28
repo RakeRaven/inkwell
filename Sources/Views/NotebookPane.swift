@@ -73,6 +73,7 @@ struct NotebookPane: View {
                     }
                 })
                 .frame(width: book.size.width, height: book.size.height)
+                .scaleEffect(bookZoom.outScale)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .id(book.spread)
             }
@@ -87,12 +88,15 @@ struct NotebookPane: View {
             .overlay {
                 if let opening = session.opening {
                     GeometryReader { geo in
-                        OpeningFlip(leaves: opening, book: bookMode ? BookLayout(page: store.notebook.size(of: pages[index]), space: geo.size) : nil) {
+                        OpeningFlip(leaves: opening, page: store.notebook.size(of: pages[index]), book: bookMode ? BookLayout(page: store.notebook.size(of: pages[index]), space: geo.size) : nil) {
                             session.opening = nil
                         }
                     }
                     .allowsHitTesting(false)
                 }
+            }
+            .overlay {
+                if InkTools.shared.ruler { RulerOverlay() }
             }
             .overlay(alignment: .top) {
                 if let hint {
@@ -280,7 +284,11 @@ struct NotebookControls: View {
         let marked = pages.indices.filter { pages[$0].bookmarked }
         return Menu {
             Button {
-                store.update(page.id) { $0.folds = page.bookmarked ? nil : [.topRight] }
+                if let canvas = session.handle.view {
+                    canvas.toggleBookmark()
+                } else {
+                    store.update(page.id) { $0.folds = page.bookmarked ? nil : [.topRight] }
+                }
             } label: {
                 Label(page.bookmarked ? "Remove Bookmark" : "Bookmark This Page", systemImage: page.bookmarked ? "bookmark.slash" : "bookmark")
             }

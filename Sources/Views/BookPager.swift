@@ -1,3 +1,4 @@
+import Observation
 import PDFKit
 import PencilKit
 import SwiftUI
@@ -25,15 +26,27 @@ struct BookLayout {
 }
 
 /// One zoom and position for every page in book mode, so turning keeps the same view.
+/// Zooming in enlarges every page alike; zooming out shrinks the whole book, spread and all.
+@Observable
 final class BookZoom {
-    /// Times the fitted size.
-    private(set) var scale: CGFloat = 1
+    /// Times the fitted size, when zoomed in.
+    @ObservationIgnored private(set) var scale: CGFloat = 1
     /// Middle of the view as a fraction of the page.
-    private(set) var center = CGPoint(x: 0.5, y: 0.5)
+    @ObservationIgnored private(set) var center = CGPoint(x: 0.5, y: 0.5)
+    /// Below 1 while the whole book is zoomed out.
+    private(set) var outScale: CGFloat = 1
     var zoomed: Bool { scale > 1.01 }
     /// Page turning pauses while zoomed in, so fingers pan instead.
-    var onZoomedChange: ((Bool) -> Void)?
-    private let pages = NSHashTable<NoteCanvasView>.weakObjects()
+    @ObservationIgnored var onZoomedChange: ((Bool) -> Void)?
+    @ObservationIgnored private let pages = NSHashTable<NoteCanvasView>.weakObjects()
+
+    func setOut(_ value: CGFloat) {
+        let value = min(max(value, 0.35), 1)
+        guard abs(value - outScale) > 0.0001 else { return }
+        let crossed = (value < 0.999) != (outScale < 0.999)
+        outScale = value
+        if crossed { pages.allObjects.forEach { $0.applyScrolling() } }
+    }
 
     func add(_ page: NoteCanvasView) {
         pages.add(page)
@@ -118,6 +131,13 @@ struct PageCurlPager: UIViewControllerRepresentable {
         for gesture in pager.gestureRecognizers { gesture.require(toFail: push) }
         pager.view.addGestureRecognizer(push)
         context.coordinator.push = push
+        if zoom != nil {
+            // pinching in past the whole page shrinks the book itself
+            let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinched(_:)))
+            pinch.delegate = context.coordinator
+            pager.view.addGestureRecognizer(pinch)
+            context.coordinator.pinch = pinch
+        }
         zoom?.onZoomedChange = { [weak pager, weak push] zoomed in
             pager?.gestureRecognizers.forEach { $0.isEnabled = !zoomed }
             push?.isEnabled = !zoomed
@@ -144,6 +164,8 @@ struct PageCurlPager: UIViewControllerRepresentable {
         var parent: PageCurlPager
         weak var pager: UIPageViewController?
         weak var push: UIPanGestureRecognizer?
+        weak var pinch: UIPinchGestureRecognizer?
+        private var pinchStart: CGFloat = 1
         /// A push turn in progress: the leaf, the pages it left, and where it goes.
         private var turning: (flip: PageFlipView, old: [UIViewController], target: Int, forward: Bool)?
         /// Edge band a thumb pushes from; the corners are left for folding.
@@ -181,6 +203,24 @@ struct PageCurlPager: UIViewControllerRepresentable {
             (content as? NoteCanvasView)?.prepareForSnapshot()
             (content as? PDFBookPage)?.prepareForSnapshot()
             return PageHost(index: index, content: content)
+        }
+
+        @objc func pinched(_ gesture: UIPinchGestureRecognizer) {
+            guard let zoom = parent.zoom else { return }
+            switch gesture.state {
+            case .began:
+                pinchStart = zoom.outScale
+            case .changed:
+                // zooming in on the pages is the pages' own pinch
+                guard !zoom.zoomed, pinchStart < 0.999 || gesture.scale < 1 else { return }
+                zoom.setOut(pinchStart * gesture.scale)
+            default:
+                if zoom.outScale > 0.95 { zoom.setOut(1) }
+            }
+        }
+
+        func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            gesture === pinch || other === pinch
         }
 
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {

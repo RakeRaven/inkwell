@@ -72,7 +72,6 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             overlay.isUserInteractionEnabled = mode != .arrange
             applyScrolling()
             rebuildOverlay()
-            updateRuler()
         }
     }
 
@@ -84,6 +83,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             // book pages are paper edge to edge, and a spread's blank end page stays white
             backgroundColor = bookMode ? .clear : Theme.uiPaper
             spine.isHidden = !bookMode
+            // the whole book shrinks when zooming out, never one page inside its half
+            canvas.bouncesZoom = !bookMode
             applyScrolling()
             fittedSize = .zero
             setNeedsLayout()
@@ -97,27 +98,39 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     let spine = SpineShade()
     private var applyingBookZoom = false
     private let foldView = FoldView()
-    private let rulerLayer = PassthroughView()
-    private var ruler: RulerView?
     private lazy var cornerPress = UILongPressGestureRecognizer(target: self, action: #selector(cornerPressed(_:)))
     private lazy var cornerPull = UIPanGestureRecognizer(target: self, action: #selector(cornerPulled(_:)))
     private let cornerGate = FoldGate()
-    /// The corner being pulled, and whether holding it still has made it a bookmark.
-    private var pull: (corner: PageCorner, armed: Bool, still: DispatchWorkItem?)?
+    /// The corner being pulled, where the finger last settled, and whether holding still there has made it a bookmark.
+    private var pull: (corner: PageCorner, rest: CGPoint, armed: Bool, still: DispatchWorkItem?)?
     /// Old page and direction, waiting for the new page to arrive so it can flip over.
     private var pendingFlip: (old: UIImage, delta: Int, cover: UIView)?
 
     private func raiseLayers() {
         canvas.bringSubviewToFront(overlay)
         canvas.bringSubviewToFront(foldView)
-        canvas.bringSubviewToFront(rulerLayer)
     }
 
-    /// The corner a finger is holding, in a zone that stays the same size on screen.
+    /// Corners on the page's open side, away from the binding.
+    private var outerCorners: [PageCorner] {
+        bookMode && spine.edge == .right ? [.topLeft, .bottomLeft] : [.topRight, .bottomRight]
+    }
+
+    /// Folds or flattens the top outer corner, for the bookmark button.
+    func toggleBookmark() {
+        let corner = outerCorners[0]
+        let marked = page?.bookmarked == true
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        editPage(marked ? "Remove Bookmark" : "Bookmark") { page in
+            page.folds = marked ? nil : [corner]
+        }
+    }
+
+    /// The outer corner a finger is holding, in a zone that stays the same size on screen.
     private func corner(at point: CGPoint) -> PageCorner? {
         let reach = max(FoldView.size, 60 / max(canvas.zoomScale, 0.1))
         let page = CGRect(origin: .zero, size: pageSize)
-        return PageCorner.allCases.first { corner in
+        return outerCorners.first { corner in
             let c = corner.point(in: page)
             return hypot(point.x - c.x, point.y - c.y) < reach
         }
@@ -145,7 +158,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         case .began:
             let t = gesture.translation(in: overlay)
             guard let corner = corner(at: CGPoint(x: point.x - t.x, y: point.y - t.y)) else { return }
-            pull = (corner, false, nil)
+            pull = (corner, point, false, nil)
             fallthrough
         case .changed:
             guard let current = pull else { return }
@@ -155,8 +168,11 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             let d = CGPoint(x: point.x - c.x, y: point.y - c.y), length = hypot(d.x, d.y)
             let tip = length > reach ? CGPoint(x: c.x + d.x / length * reach, y: c.y + d.y / length * reach) : point
             foldView.live = (current.corner, tip)
-            guard !current.armed else { return }
+            // a fingertip never keeps perfectly still; only real moves restart the hold
+            let wobble = 10 / max(canvas.zoomScale, 0.1)
+            guard !current.armed, current.still == nil || hypot(point.x - current.rest.x, point.y - current.rest.y) > wobble else { return }
             current.still?.cancel()
+            pull?.rest = point
             let still = DispatchWorkItem { [weak self] in
                 guard let self, self.pull?.corner == current.corner else { return }
                 self.pull?.armed = true
@@ -183,35 +199,13 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         }
     }
 
-    /// Shows the ruler on the page being written on, and only there.
-    private func updateRuler() {
-        let tools = InkTools.shared
-        guard tools.ruler, tools.active === ink, window != nil, mode == .draw else {
-            ruler?.removeFromSuperview()
-            ruler = nil
-            return
-        }
-        let view = ruler ?? RulerView()
-        if ruler == nil {
-            ruler = view
-            rulerLayer.addSubview(view)
-            view.onMove = { middle, angle in
-                tools.rulerMiddle = middle
-                tools.rulerAngle = angle
-            }
-        }
-        let page = CGRect(origin: .zero, size: pageSize)
-        var middle = tools.rulerMiddle ?? visibleCenter()
-        middle.x = min(max(middle.x, page.minX), page.maxX)
-        middle.y = min(max(middle.y, page.minY), page.maxY)
-        view.place(at: middle, angle: tools.rulerAngle)
-    }
-
-    private func applyScrolling() {
+    func applyScrolling() {
         // a book page only pans once zoomed in, otherwise fingers turn pages
         let pans = bookMode ? bookZoom?.zoomed == true : true
         canvas.isScrollEnabled = pans && (mode == .draw || mode == .arrange)
-        canvas.pinchGestureRecognizer?.isEnabled = mode != .arrange
+        // while the whole book is shrunk, pinching resizes the book instead
+        let shrunk = bookMode && (bookZoom?.outScale ?? 1) < 0.999
+        canvas.pinchGestureRecognizer?.isEnabled = mode != .arrange && !shrunk
     }
 
     /// Takes the book's shared zoom and position.
@@ -300,7 +294,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         spine.isHidden = true
         addSubview(spine)
 
-        for view in [paper, media, shapesView, overlay, foldView, rulerLayer] as [UIView] {
+        for view in [paper, media, shapesView, overlay, foldView] as [UIView] {
             view.bounds = CGRect(origin: .zero, size: pageSize)
         }
         media.isUserInteractionEnabled = false
@@ -310,7 +304,6 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         canvas.insertSubview(shapesView, aboveSubview: media)
         canvas.addSubview(overlay)
         canvas.addSubview(foldView)
-        canvas.addSubview(rulerLayer)
 
         // pull a page corner over to fold it; holding a folded one flattens it
         cornerPress.minimumPressDuration = 0.45
@@ -389,8 +382,11 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         }
         ink.onScroll = { [weak self] in self?.reportBookZoom() }
         ink.onScrollEnd = { [weak self] in self?.reportBookZoom(settled: true) }
-        ink.onToolsChanged = { [weak self] in self?.updateRuler() }
-        ink.adjustStroke = { [weak self] stroke in self?.ruler?.straightened(stroke) }
+        ink.onToolsChanged = { [weak self] in self?.shareRulerScale() }
+        ink.adjustStroke = { [weak self] stroke in
+            guard let self, InkTools.shared.ruler else { return nil }
+            return RulerView.shared?.straightened(stroke, in: self.overlay)
+        }
         ink.extrasHit = { [weak self] area in
             guard let self else { return false }
             return !self.boxes(in: area).isEmpty || !self.shapes(in: area).isEmpty
@@ -415,7 +411,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     func show(_ page: NotePage, paper style: PaperStyle, color: PaperColor, size: CGSize, background: PDFPage?, drawing: () -> PKDrawing) {
         if size != pageSize {
             pageSize = size
-            for view in [paper, media, shapesView, overlay, foldView, rulerLayer] as [UIView] {
+            for view in [paper, media, shapesView, overlay, foldView] as [UIView] {
                 view.bounds = CGRect(origin: .zero, size: size)
             }
             fittedSize = .zero
@@ -469,10 +465,14 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     }
 
     /// Turns the page like paper: forward lifts the old page away, back lays the new one down over it.
+    /// Only the sheet turns; the desk around it stays.
     private func flip(from old: UIImage, delta: Int, cover: UIView) {
         let new = PageFlipView.snapshot(canvas, afterUpdates: true)
         let forward = delta > 0
-        let flip = PageFlipView(frame: bounds, under: forward ? new : old, leaf: bounds, front: forward ? old : new,
+        let sheet = overlay.convert(overlay.bounds, to: self).intersection(bounds)
+        guard !sheet.isNull, sheet.width > 1 else { return cover.removeFromSuperview() }
+        let flip = PageFlipView(frame: bounds, under: forward ? new : old, leaf: sheet,
+                                front: PageFlipView.crop(forward ? old : new, to: sheet),
                                 back: nil, backColor: paper.color.fill, forward: forward)
         addSubview(flip)
         cover.removeFromSuperview()
@@ -525,7 +525,13 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil { ink.activate() }
-        updateRuler()
+    }
+
+    /// The ruler's marks follow the zoom of the page being written on.
+    private func shareRulerScale() {
+        guard InkTools.shared.active === ink, window != nil else { return }
+        let a = overlay.convert(CGPoint.zero, to: nil), b = overlay.convert(CGPoint(x: 1, y: 0), to: nil)
+        InkTools.shared.rulerScale = hypot(b.x - a.x, b.y - a.y)
     }
 
     override func layoutSubviews() {
@@ -539,7 +545,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             : bounds.width / pageSize.width
         fitScale = fit
         // a book page never shrinks below the paper
-        canvas.minimumZoomScale = fit * 0.3
+        canvas.minimumZoomScale = bookMode ? fit : fit * 0.3
         canvas.maximumZoomScale = fit * 4
         canvas.zoomScale = fit
         syncZoom()
@@ -550,7 +556,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         let zoom = canvas.zoomScale
         let size = CGSize(width: pageSize.width * zoom, height: pageSize.height * zoom)
         canvas.contentSize = size
-        for view in [paper, media, shapesView, overlay, foldView, rulerLayer] as [UIView] {
+        for view in [paper, media, shapesView, overlay, foldView] as [UIView] {
             view.transform = CGAffineTransform(scaleX: zoom, y: zoom)
             view.center = CGPoint(x: size.width / 2, y: size.height / 2)
         }
@@ -568,6 +574,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         }
         layoutHandles()
         raiseLayers()
+        shareRulerScale()
     }
 
     /// Draws everything now, so a page curl snapshot isn't blank.
@@ -620,7 +627,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         shapesView.shapes = page.shapes
         if let id = selectedShape {
             if let current = page.shapes.first(where: { $0.id == id }) {
-                if shapeDrag == nil { editor?.shape = current }
+                if shapeDrag == nil, editor?.shape != current { editor?.shape = current }
             } else {
                 deselectShape()
             }
@@ -662,6 +669,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         handleViews = []
         layoutHandles()
         raiseLayers()
+        shareRulerScale()
     }
 
     private var inkColor: UIColor {
