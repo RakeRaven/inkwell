@@ -35,8 +35,9 @@ struct ShapeInspector: View {
                 case .line: line
                 case .ellipse: ellipse
                 case .projectile: projectile
+                case .graph: graph
                 }
-                if shape.kind != .projectile {
+                if shape.kind != .projectile, shape.kind != .graph {
                     Toggle("Show Measurements", isOn: Binding(get: { shape.measures ?? false }, set: { on in
                         editor.apply { var s = $0; s.measures = on; return s }
                     }))
@@ -69,6 +70,7 @@ struct ShapeInspector: View {
         case .line: "Line"
         case .ellipse: (shape.radii.map { abs($0.width - $0.height) < 0.5 } ?? false) ? "Circle" : "Ellipse"
         case .projectile: "Projectile"
+        case .graph: "Graph"
         }
     }
 
@@ -197,6 +199,74 @@ struct ShapeInspector: View {
             Text("Drag the arrow to aim, drag the start point to move it.")
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
+        }
+    }
+
+    private var graph: some View {
+        let g = shape.graph ?? GraphSpec()
+        return VStack(alignment: .leading, spacing: 12) {
+            sectionTitle("Functions")
+            ForEach(Array(g.functions.enumerated()), id: \.offset) { i, text in
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(Color(hex: ShapeLayerView.curveColors[i % ShapeLayerView.curveColors.count]))
+                        .frame(width: 10, height: 10)
+                    Text("y =").foregroundStyle(Theme.muted)
+                    TextField("2x^2 - 3", text: Binding(get: { text }, set: { value in setGraph { $0.functions[i] = value } }))
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .font(.system(size: 15, design: .monospaced))
+                        .foregroundStyle(FunctionParser.parse(text) == nil ? Color.red : Theme.ink)
+                    Button(role: .destructive) { setGraph { $0.functions.remove(at: i) } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                }
+            }
+            Button { setGraph { $0.functions.append("x") } } label: { Label("Add Function", systemImage: "plus") }
+                .buttonStyle(.bordered)
+            Text("Use x, + - * / ^, sin cos tan, sqrt, abs, ln, log, exp, pi and e. 2x and 3sin(x) work too.")
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
+            sectionTitle("Window")
+            numberRow("x from", value: g.xMin, unit: "", range: -10000...10000, step: 1) { v in setGraph { $0.xMin = min(v, $0.xMax - 0.1) } }
+            numberRow("x to", value: g.xMax, unit: "", range: -10000...10000, step: 1) { v in setGraph { $0.xMax = max(v, $0.xMin + 0.1) } }
+            numberRow("y from", value: g.yMin, unit: "", range: -10000...10000, step: 1) { v in setGraph { $0.yMin = min(v, $0.yMax - 0.1) } }
+            numberRow("y to", value: g.yMax, unit: "", range: -10000...10000, step: 1) { v in setGraph { $0.yMax = max(v, $0.yMin + 0.1) } }
+            HStack(spacing: 8) {
+                preset("Fit y") { s in
+                    var out = s
+                    if let fit = s.graph?.fittedY() {
+                        out.graph?.yMin = fit.0
+                        out.graph?.yMax = fit.1
+                    }
+                    return out
+                }
+                preset("Equal Scale") { s in
+                    // same units per point on both axes, keeping y centred
+                    var out = s
+                    guard var g = s.graph else { return s }
+                    let f = s.graphFrame
+                    let perPoint = (g.xMax - g.xMin) / Double(f.width)
+                    let mid = (g.yMin + g.yMax) / 2, half = perPoint * Double(f.height) / 2
+                    g.yMin = mid - half
+                    g.yMax = mid + half
+                    out.graph = g
+                    return out
+                }
+            }
+            Text("Drag the corner handle to resize, drag the graph to move it.")
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func setGraph(_ edit: @escaping (inout GraphSpec) -> Void) {
+        editor.apply { s in
+            var out = s
+            var g = s.graph ?? GraphSpec()
+            edit(&g)
+            out.graph = g
+            return out
         }
     }
 

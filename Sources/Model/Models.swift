@@ -251,7 +251,16 @@ struct ImageBox: Codable, Identifiable, Equatable {
 }
 
 enum ShapeKind: String, Codable {
-    case polygon, polyline, line, ellipse, projectile
+    case polygon, polyline, line, ellipse, projectile, graph
+}
+
+/// Functions of x plotted over a window.
+struct GraphSpec: Codable, Equatable {
+    var functions = ["sin(x)"]
+    var xMin = -10.0
+    var xMax = 10.0
+    var yMin = -6.0
+    var yMax = 6.0
 }
 
 /// Launch settings for a projectile, in metres, seconds and degrees.
@@ -269,8 +278,9 @@ struct Projectile: Codable, Equatable {
 struct ShapeItem: Codable, Identifiable, Equatable {
     var id = UUID()
     var kind: ShapeKind
-    /// Vertices; a line's two ends; an ellipse's centre; a projectile's launch point.
+    /// Vertices; a line's two ends; an ellipse's centre; a projectile's launch point; a graph's top-left.
     var points: [CGPoint]
+    /// Ellipse radii, or a graph's size.
     var radii: CGSize?
     /// Radians, for ellipses.
     var rotation: Double?
@@ -280,6 +290,7 @@ struct ShapeItem: Codable, Identifiable, Equatable {
     /// Show side lengths and angles.
     var measures: Bool?
     var projectile: Projectile?
+    var graph: GraphSpec?
 }
 
 /// A page of an inserted PDF shown as the paper.

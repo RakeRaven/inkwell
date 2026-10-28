@@ -6,6 +6,11 @@ let cmPerPoint = 21.0 / 820.0
 extension ShapeItem {
     var closed: Bool { kind == .polygon || kind == .ellipse }
 
+    /// A graph's plot area on the page.
+    var graphFrame: CGRect {
+        CGRect(origin: points.first ?? .zero, size: radii ?? CGSize(width: 480, height: 340))
+    }
+
     var center: CGPoint {
         switch kind {
         case .ellipse, .projectile:
@@ -32,6 +37,10 @@ extension ShapeItem {
             }
         case .projectile:
             return trajectory
+        case .graph:
+            let f = graphFrame
+            return [CGPoint(x: f.minX, y: f.minY), CGPoint(x: f.maxX, y: f.minY), CGPoint(x: f.maxX, y: f.maxY),
+                    CGPoint(x: f.minX, y: f.maxY), CGPoint(x: f.minX, y: f.minY)]
         }
     }
 
@@ -42,6 +51,7 @@ extension ShapeItem {
     }
 
     func distance(to p: CGPoint) -> CGFloat {
+        if kind == .graph, graphFrame.contains(p) { return 0 }
         let line = outline
         var best = CGFloat.infinity
         for (a, b) in zip(line, line.dropFirst()) {
@@ -74,6 +84,8 @@ extension ShapeItem {
                     CGPoint(x: c.x - r.height * sin(a), y: c.y + r.height * cos(a))]
         case .projectile:
             return [center, arrowTip]
+        case .graph:
+            return [CGPoint(x: graphFrame.maxX, y: graphFrame.maxY)]
         }
     }
 
@@ -102,6 +114,9 @@ extension ShapeItem {
                 launch.speed = max(Double(hypot(dx, dy)) / (launch.scale * Self.arrowPerSpeed), 1)
                 s.projectile = launch
             }
+        case .graph:
+            let o = graphFrame.origin
+            s.radii = CGSize(width: max(p.x - o.x, 160), height: max(p.y - o.y, 120))
         }
         return s
     }
@@ -120,6 +135,11 @@ extension ShapeItem {
             s.radii = radii.map { CGSize(width: $0.width * k, height: $0.height * k) }
         case .projectile:
             s.projectile?.scale = (projectile?.scale ?? 12) * Double(k)
+        case .graph:
+            let f = graphFrame
+            let size = CGSize(width: max(f.width * k, 160), height: max(f.height * k, 120))
+            s.points = [CGPoint(x: f.midX - size.width / 2, y: f.midY - size.height / 2)]
+            s.radii = size
         default:
             s.points = points.map { CGPoint(x: c.x + ($0.x - c.x) * k, y: c.y + ($0.y - c.y) * k) }
         }
@@ -312,6 +332,10 @@ final class ShapeLayerView: UIView {
             drawProjectile(shape, color: color, in: ctx)
             return
         }
+        if shape.kind == .graph {
+            drawGraph(shape, in: ctx)
+            return
+        }
         stroke(shape.outline, color: color, width: shape.width, in: ctx)
         guard shape.measures == true else { return }
         let label = Theme.uiAccent
@@ -355,9 +379,92 @@ final class ShapeLayerView: UIView {
             } else {
                 text(String(format: "a = %.1f cm  b = %.1f cm", Double(r.width) * cmPerPoint, Double(r.height) * cmPerPoint), at: c, color: label)
             }
-        case .projectile:
+        case .projectile, .graph:
             break
         }
+    }
+
+    static let curveColors = ["C8322D", "1F4E9C", "2E8B57", "B5523B", "6C5B9E", "C46A8E"]
+
+    /// Grid, axes with numbered ticks, each function in its own colour, and a legend.
+    private func drawGraph(_ shape: ShapeItem, in ctx: CGContext) {
+        guard let g = shape.graph, g.xMax > g.xMin, g.yMax > g.yMin else { return }
+        let frame = shape.graphFrame
+        func px(_ x: Double) -> CGFloat { frame.minX + CGFloat((x - g.xMin) / (g.xMax - g.xMin)) * frame.width }
+        func py(_ y: Double) -> CGFloat { frame.maxY - CGFloat((y - g.yMin) / (g.yMax - g.yMin)) * frame.height }
+
+        UIColor.white.withAlphaComponent(0.85).setFill()
+        UIBezierPath(roundedRect: frame, cornerRadius: 6).fill()
+        ctx.saveGState()
+        ctx.clip(to: frame)
+        let gridColor = UIColor(white: 0.5, alpha: 0.18)
+        let xStep = GraphSpec.step(for: g.xMax - g.xMin), yStep = GraphSpec.step(for: g.yMax - g.yMin)
+        var x = (g.xMin / xStep).rounded(.up) * xStep
+        while x <= g.xMax {
+            stroke([CGPoint(x: px(x), y: frame.minY), CGPoint(x: px(x), y: frame.maxY)], color: gridColor, width: 1, in: ctx)
+            x += xStep
+        }
+        var y = (g.yMin / yStep).rounded(.up) * yStep
+        while y <= g.yMax {
+            stroke([CGPoint(x: frame.minX, y: py(y)), CGPoint(x: frame.maxX, y: py(y))], color: gridColor, width: 1, in: ctx)
+            y += yStep
+        }
+        // axes sit at zero, or hug the edge when zero is off screen
+        let axisX = min(max(px(0), frame.minX), frame.maxX), axisY = min(max(py(0), frame.minY), frame.maxY)
+        let axis = UIColor(white: 0.25, alpha: 0.8)
+        stroke([CGPoint(x: frame.minX, y: axisY), CGPoint(x: frame.maxX, y: axisY)], color: axis, width: 1.5, in: ctx)
+        stroke([CGPoint(x: axisX, y: frame.minY), CGPoint(x: axisX, y: frame.maxY)], color: axis, width: 1.5, in: ctx)
+        x = (g.xMin / xStep).rounded(.up) * xStep
+        while x <= g.xMax {
+            if abs(x) > xStep / 2 { small(MathEvaluator.format(x.rounded(toPlaces: 6)), at: CGPoint(x: px(x), y: min(axisY + 10, frame.maxY - 8))) }
+            x += xStep
+        }
+        y = (g.yMin / yStep).rounded(.up) * yStep
+        while y <= g.yMax {
+            if abs(y) > yStep / 2 { small(MathEvaluator.format(y.rounded(toPlaces: 6)), at: CGPoint(x: max(axisX - 14, frame.minX + 12), y: py(y))) }
+            y += yStep
+        }
+
+        // curves, broken where they leave the window or jump (asymptotes)
+        for (n, text) in g.functions.enumerated() {
+            guard let f = FunctionParser.parse(text) else { continue }
+            let color = UIColor(hex: Self.curveColors[n % Self.curveColors.count])
+            let samples = Int(frame.width / 1.5)
+            var run: [CGPoint] = []
+            for i in 0...samples {
+                let xv = g.xMin + (g.xMax - g.xMin) * Double(i) / Double(samples)
+                let yv = f(xv)
+                let p = CGPoint(x: px(xv), y: py(yv))
+                let usable = yv.isFinite && abs(p.y - frame.midY) < frame.height * 3
+                if usable, let last = run.last, abs(p.y - last.y) > frame.height * 1.5 {
+                    stroke(run, color: color, width: shape.width, in: ctx)
+                    run = []
+                }
+                if usable { run.append(p) } else {
+                    stroke(run, color: color, width: shape.width, in: ctx)
+                    run = []
+                }
+            }
+            stroke(run, color: color, width: shape.width, in: ctx)
+        }
+        ctx.restoreGState()
+
+        UIColor(white: 0.5, alpha: 0.4).setStroke()
+        let border = UIBezierPath(roundedRect: frame, cornerRadius: 6)
+        border.lineWidth = 1
+        border.stroke()
+        for (n, text) in g.functions.enumerated() {
+            let ok = FunctionParser.parse(text) != nil
+            let color = ok ? UIColor(hex: Self.curveColors[n % Self.curveColors.count]) : UIColor.systemRed
+            let label = (text.contains("=") ? text : "y = " + text) + (ok ? "" : "  (can't read)")
+            self.text(label, at: CGPoint(x: frame.minX + 10, y: frame.minY + 16 + CGFloat(n) * 20), color: color, leading: true)
+        }
+    }
+
+    private func small(_ string: String, at point: CGPoint) {
+        let attrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 10, weight: .medium), .foregroundColor: UIColor(white: 0.35, alpha: 1)]
+        let size = (string as NSString).size(withAttributes: attrs)
+        (string as NSString).draw(at: CGPoint(x: point.x - size.width / 2, y: point.y - size.height / 2), withAttributes: attrs)
     }
 
     private func drawProjectile(_ shape: ShapeItem, color: UIColor, in ctx: CGContext) {
@@ -429,5 +536,12 @@ final class ShapeLayerView: UIView {
         UIColor.white.withAlphaComponent(0.75).setFill()
         UIBezierPath(roundedRect: bubble, cornerRadius: 5).fill()
         (string as NSString).draw(at: origin, withAttributes: attrs)
+    }
+}
+
+private extension Double {
+    func rounded(toPlaces places: Int) -> Double {
+        let m = pow(10, Double(places))
+        return (self * m).rounded() / m
     }
 }

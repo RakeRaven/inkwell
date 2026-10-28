@@ -73,7 +73,7 @@ struct CoverView: View {
     private func stickerView(_ sticker: CoverSticker, scale s: CGFloat) -> some View {
         if let emoji = sticker.emoji {
             Text(emoji)
-                .font(.system(size: Self.emojiSize * s))
+                .font(.system(size: max(Self.emojiSize * s, 1)))
                 .fixedSize()
         } else if let image = stickerImages[sticker.id] {
             Image(uiImage: image)
@@ -207,8 +207,6 @@ struct CoverPicker: View {
     @State private var inkBefore: (ink: PKDrawing, changed: Bool)?
 
     private var canvas: CGSize { Cover.canvasSize }
-    private static let quickStickers = ["\u{2728}", "\u{1F496}", "\u{1F338}", "\u{2B50}", "\u{1F98B}", "\u{1F319}", "\u{1F525}", "\u{1F353}",
-                                        "\u{1F4DA}", "\u{1F380}", "\u{1F308}", "\u{1F431}", "\u{1F3A7}", "\u{2615}", "\u{1F9E0}", "\u{1F4AB}"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -361,7 +359,8 @@ struct CoverPicker: View {
     }
 
     private func change(_ translation: CGSize, _ scale: CGFloat, _ rotation: CGFloat) {
-        guard let target else { return }
+        guard let target, translation.width.isFinite, translation.height.isFinite,
+              scale.isFinite, scale > 0, rotation.isFinite else { return }
         let x = start.x + Double(translation.width / canvas.width)
         let y = start.y + Double(translation.height / canvas.height)
         if target == .photo {
@@ -576,16 +575,8 @@ struct CoverPicker: View {
     private var stickerControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Stickers")
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(34)), count: 8), alignment: .leading, spacing: 8) {
-                ForEach(Self.quickStickers, id: \.self) { emoji in
-                    Button { add(CoverSticker(emoji: emoji)) } label: {
-                        Text(emoji).font(.system(size: 24)).frame(width: 34, height: 34)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
             HStack(spacing: 8) {
-                TextField("Any emoji or text", text: $customSticker)
+                TextField("Type or pick an emoji", text: $customSticker)
                     .textFieldStyle(.roundedBorder)
                 Button("Add") {
                     let text = customSticker.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -600,7 +591,7 @@ struct CoverPicker: View {
             }
             .buttonStyle(.bordered)
             .disabled(lifting)
-            Text("Photo stickers cut out the subject automatically.")
+            Text("Use the emoji key on the keyboard for emoji. Photo stickers cut out the subject automatically.")
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
         }

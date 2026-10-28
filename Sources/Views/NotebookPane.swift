@@ -211,6 +211,9 @@ struct NotebookControls: View {
                 } label: {
                     Label("Geometry", systemImage: "triangle")
                 }
+                Button { session.handle.view?.insertShape(.graph) } label: {
+                    Label("Graph", systemImage: "chart.xyaxis.line")
+                }
                 Button { session.handle.view?.insertShape(.projectile) } label: {
                     Label("Projectile (Physics)", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
                 }

@@ -16,7 +16,7 @@ enum CanvasMode {
 
 /// Ready-made shapes for the insert menu.
 enum ShapePreset {
-    case equilateral, rightTriangle, square, circle, line, angle, projectile
+    case equilateral, rightTriangle, square, circle, line, angle, projectile, graph
 }
 
 /// Lets toolbar actions reach the live canvas (e.g. to place things where the user is looking).
@@ -801,6 +801,13 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             shape.projectile = Projectile()
             shape.width = 2.5
             shape.measures = nil
+        case .graph:
+            shape.kind = .graph
+            shape.points = [CGPoint(x: c.x - 240, y: c.y - 170)]
+            shape.radii = CGSize(width: 480, height: 340)
+            shape.graph = GraphSpec(functions: ["sin(x)", "x^2/5 - 3"])
+            shape.width = 2.5
+            shape.measures = nil
         }
         let id = shape.id
         editPage("Add Shape") { $0.shapes.append(shape) }
@@ -849,7 +856,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         guard let presenter = viewController, presenter.presentedViewController == nil else { return }
         let host = UIHostingController(rootView: ShapeInspector(editor: editor))
         host.modalPresentationStyle = .popover
-        host.preferredContentSize = CGSize(width: 340, height: shape.kind == .projectile ? 620 : 470)
+        host.preferredContentSize = CGSize(width: 340, height: shape.kind == .projectile || shape.kind == .graph ? 620 : 470)
         if let pop = host.popoverPresentationController {
             pop.sourceView = self
             pop.sourceRect = overlay.convert(shape.bounds, to: self).intersection(bounds.insetBy(dx: 20, dy: 20))
