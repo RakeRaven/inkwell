@@ -194,7 +194,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
                 push.subtype = pushDirection > 0 ? .fromRight : .fromLeft
                 push.duration = 0.25
                 push.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                layer.add(push, forKey: "pageTurn")
+                // on the canvas, not self, so this view's bounds clip the slide
+                canvas.layer.add(push, forKey: "pageTurn")
                 pushDirection = 0
             }
         }
