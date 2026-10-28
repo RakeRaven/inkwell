@@ -27,7 +27,17 @@ struct Cover: Codable, Hashable {
     var pattern: CoverPattern = .plain
     /// Photo stored as cover-<id>.jpg in the item's folder.
     var photo: UUID?
+    /// Photo framing: zoom of at least 1, offsets as fractions of the cover size.
+    var zoom: Double?
+    var offsetX: Double?
+    var offsetY: Double?
+    var titlePosition: CoverTitlePosition?
+    var titleStyle: CoverTitleStyle?
+    var titleFont: CoverTitleFont?
+    /// Handwriting stored as cover-ink-<id>.drawing, drawn on a `canvasSize` cover.
+    var ink: UUID?
 
+    static let canvasSize = CGSize(width: 300, height: 416)
     static let colors = ["2F5D8A", "1F3B4D", "6B2E3E", "B5523B", "D9A441", "5E8C61", "2E6E6A", "6C5B9E", "C46A8E", "8A8D91", "2B2B2E", "E8DCC8"]
 }
 
@@ -35,6 +45,32 @@ enum CoverPattern: String, Codable, CaseIterable, Identifiable {
     case plain, spine, stripes, dots, grid
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
+}
+
+enum CoverTitlePosition: String, Codable, CaseIterable, Identifiable {
+    case top, middle, bottom, hidden
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+enum CoverTitleStyle: String, Codable, CaseIterable, Identifiable {
+    case label, light, dark
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+enum CoverTitleFont: String, Codable, CaseIterable, Identifiable {
+    case system, serif, rounded, hand
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: "Sans"
+        case .serif: "Serif"
+        case .rounded: "Rounded"
+        case .hand: "Hand"
+        }
+    }
 }
 
 enum PaperStyle: String, Codable, CaseIterable, Identifiable {

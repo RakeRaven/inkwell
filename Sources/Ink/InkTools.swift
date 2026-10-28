@@ -54,6 +54,19 @@ enum PenKind: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// Range for the fine-tune slider.
+    var widthRange: ClosedRange<CGFloat> {
+        switch self {
+        case .fountain: 0.5...12
+        case .ball: 0.5...8
+        case .brush: 1...24
+        case .pencil: 0.5...16
+        case .highlighter: 4...50
+        case .eraser: 4...80
+        case .lasso: 1...1
+        }
+    }
+
     var defaultColors: [String] {
         switch self {
         case .highlighter: ["FFE45C", "8EF08A", "FF9ECF", "8CCBFF"]
@@ -67,6 +80,8 @@ struct PenSettings: Codable, Equatable {
     var colors: [String]
     var colorIndex = 0
     var widthIndex = 1
+    /// Fine-tuned preset sizes; nil uses the pen's defaults.
+    var widths: [CGFloat]?
 }
 
 /// Pen state shared by every canvas, plus the compact toolbar's preferences.
@@ -83,6 +98,7 @@ final class InkTools {
         var systemPicker: Bool
         var autoHide: Bool
         var atBottom: Bool
+        var holdShapes: Bool?
     }
 
     private(set) var pen: PenKind = .fountain
@@ -93,6 +109,8 @@ final class InkTools {
     private(set) var systemPicker = false
     private(set) var autoHide = true
     private(set) var atBottom = false
+    /// Hold the pencil still at the end of a stroke to snap it into a shape.
+    private(set) var holdShapes = true
     /// Strip folded into a small pill (grip button or Pencil squeeze).
     var collapsed = false
     private(set) var hiddenWhileDrawing = false
@@ -113,6 +131,7 @@ final class InkTools {
         systemPicker = saved.systemPicker
         autoHide = saved.autoHide
         atBottom = saved.atBottom
+        holdShapes = saved.holdShapes ?? true
     }
 
     func settings(for pen: PenKind) -> PenSettings {
@@ -121,9 +140,18 @@ final class InkTools {
 
     var current: PenSettings { settings(for: pen) }
 
+    var widths: [CGFloat] {
+        let custom = current.widths ?? []
+        return custom.count == pen.widths.count ? custom : pen.widths
+    }
+
+    var width: CGFloat {
+        let all = widths
+        return all.indices.contains(current.widthIndex) ? all[current.widthIndex] : all.first ?? 1
+    }
+
     var tool: PKTool {
         let s = current
-        let width = pen.widths.indices.contains(s.widthIndex) ? pen.widths[s.widthIndex] : pen.widths.first ?? 1
         switch pen {
         case .eraser:
             return pixelEraser ? PKEraserTool(.bitmap, width: width) : PKEraserTool(.vector)
@@ -164,11 +192,22 @@ final class InkTools {
         change { settings[pen.rawValue] = with(current) { $0.widthIndex = index } }
     }
 
+    /// Fine-tunes the selected size preset.
+    func setWidthValue(_ value: CGFloat) {
+        let range = pen.widthRange
+        var all = widths
+        let index = current.widthIndex
+        guard all.indices.contains(index) else { return }
+        all[index] = min(max(value, range.lowerBound), range.upperBound)
+        change { settings[pen.rawValue] = with(current) { $0.widths = all } }
+    }
+
     func setPixelEraser(_ on: Bool) { change { pixelEraser = on } }
     func setFingerDraws(_ on: Bool) { change { fingerDraws = on } }
     func setSystemPicker(_ on: Bool) { change { systemPicker = on } }
     func setAutoHide(_ on: Bool) { change { autoHide = on } }
     func setAtBottom(_ on: Bool) { change { atBottom = on } }
+    func setHoldShapes(_ on: Bool) { change { holdShapes = on } }
 
     func undo() { active?.canvas.undoManager?.undo() }
     func redo() { active?.canvas.undoManager?.redo() }
@@ -205,7 +244,7 @@ final class InkTools {
     private func change(_ edit: () -> Void) {
         edit()
         let saved = Saved(pen: pen, settings: settings, pixelEraser: pixelEraser, fingerDraws: fingerDraws,
-                          systemPicker: systemPicker, autoHide: autoHide, atBottom: atBottom)
+                          systemPicker: systemPicker, autoHide: autoHide, atBottom: atBottom, holdShapes: holdShapes)
         if let data = try? JSONEncoder().encode(saved) {
             UserDefaults.standard.set(data, forKey: Self.key)
         }

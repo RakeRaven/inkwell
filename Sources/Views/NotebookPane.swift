@@ -84,45 +84,68 @@ struct NotebookPane: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 18) {
+        let page = pages[index]
+        let style = store.notebook.style(of: page)
+        let color = store.notebook.color(of: page)
+        return HStack(spacing: 2) {
             Text(store.item.title)
-                .font(.headline)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.ink)
                 .lineLimit(1)
-            Spacer()
+                .padding(.leading, 6)
+            Spacer(minLength: 8)
             if !linkOptions.isEmpty {
                 Menu {
                     ForEach(linkOptions) { option in
                         Button(option.title) { handle.view?.addLink(option.target, label: option.label) }
                     }
                 } label: {
-                    Image(systemName: "link.badge.plus")
+                    BarIcon("link.badge.plus")
                 }
             }
-            Button { addingText = true } label: { Image(systemName: "textformat") }
-            Toggle(isOn: $convertMode) { Image(systemName: "text.viewfinder") }
-                .toggleStyle(.button)
-            Button { choosingPaper = true } label: { Image(systemName: "doc.plaintext") }
-                .popover(isPresented: $choosingPaper) { paperPicker }
-            Divider().frame(height: 22)
-            Button { pageIndex = index - 1 } label: { Image(systemName: "chevron.left") }
+            Button { addingText = true } label: { BarIcon("textformat") }
+            Button { convertMode.toggle() } label: { BarIcon("text.viewfinder", active: convertMode) }
+            // shows the current page's paper so you know what you're switching from
+            Button { choosingPaper = true } label: {
+                HStack(spacing: 6) {
+                    Image(uiImage: PaperRenderer.image(style, color: color, width: 14))
+                        .resizable()
+                        .frame(width: 14, height: 20)
+                        .clipShape(RoundedRectangle(cornerRadius: 2))
+                        .overlay(RoundedRectangle(cornerRadius: 2).stroke(Theme.line, lineWidth: 1))
+                    Text(style.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Theme.ink)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(Theme.raised, in: Capsule())
+                .overlay(Capsule().stroke(Theme.line, lineWidth: 1))
+            }
+            .popover(isPresented: $choosingPaper) { paperPicker }
+            .padding(.horizontal, 4)
+            Theme.line.frame(width: 1, height: 22).padding(.horizontal, 4)
+            Button { pageIndex = index - 1 } label: { BarIcon("chevron.left") }
                 .disabled(index == 0)
             Text("\(index + 1) / \(pages.count)")
-                .font(.subheadline)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.muted)
                 .monospacedDigit()
             Button {
                 pageIndex = isLastPage ? store.addPage(after: index) : index + 1
             } label: {
-                Image(systemName: isLastPage ? "plus" : "chevron.right")
+                BarIcon(isLastPage ? "plus" : "chevron.right")
             }
             Menu {
                 Button { pageIndex = store.addPage(after: index) } label: { Label("Insert Page After", systemImage: "plus.square") }
                 Button(role: .destructive) { confirmDelete = true } label: { Label("Delete Page", systemImage: "trash") }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                BarIcon("ellipsis")
             }
         }
-        .padding(.horizontal)
-        .frame(height: 44)
-        .background(.bar)
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .barStyle()
     }
 }

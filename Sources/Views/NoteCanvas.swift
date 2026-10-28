@@ -68,7 +68,9 @@ final class NoteCanvasView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .secondarySystemBackground
+        backgroundColor = Theme.uiPaper
+        // keeps the page-turn slide inside this pane
+        clipsToBounds = true
         canvas.frame = bounds
         canvas.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         canvas.contentInsetAdjustmentBehavior = .never
@@ -79,8 +81,8 @@ final class NoteCanvasView: UIView {
         canvas.insertSubview(paper, at: 0)
         canvas.addSubview(overlay)
 
-        selectionLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.08).cgColor
-        selectionLayer.strokeColor = UIColor.systemBlue.cgColor
+        selectionLayer.fillColor = Theme.uiAccent.withAlphaComponent(0.08).cgColor
+        selectionLayer.strokeColor = Theme.uiAccent.cgColor
         selectionLayer.lineWidth = 2
         selectionLayer.lineDashPattern = [6, 4]
         overlay.layer.addSublayer(selectionLayer)
@@ -216,7 +218,7 @@ final class NoteCanvasView: UIView {
     private func textBoxView(_ box: TextBox) -> UIView {
         let button = UIButton(type: .custom)
         let font = UIFont(name: "Noteworthy-Light", size: box.fontSize) ?? .systemFont(ofSize: box.fontSize)
-        let color: UIColor = box.anchor == nil ? .black : .systemBlue
+        let color: UIColor = box.anchor == nil ? .black : Theme.uiAccent
         button.setAttributedTitle(NSAttributedString(string: box.text, attributes: [.font: font, .foregroundColor: color]), for: .normal)
         button.titleLabel?.numberOfLines = 0
         button.contentHorizontalAlignment = .leading

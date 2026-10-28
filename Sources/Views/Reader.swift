@@ -77,11 +77,12 @@ struct ReaderPane: View {
     }
 
     private var bar: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 6) {
             Text(location)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.muted)
                 .lineLimit(1)
+                .padding(.leading, 6)
             Spacer()
             if !backlinks.isEmpty {
                 Menu {
@@ -90,6 +91,11 @@ struct ReaderPane: View {
                     }
                 } label: {
                     Label("\(backlinks.count)", systemImage: "link")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(Theme.accent, in: Capsule())
                 }
             }
             if !model.chapters.isEmpty {
@@ -98,16 +104,16 @@ struct ReaderPane: View {
                         Button(chapter.title) { model.state.jump = PageJump(page: chapter.page) }
                     }
                 } label: {
-                    Image(systemName: "list.bullet")
+                    BarIcon("list.bullet")
                 }
             }
             if let book = model.epub {
                 chapterControls(book)
             }
         }
-        .padding(.horizontal)
-        .frame(height: 44)
-        .background(.bar)
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .barStyle()
     }
 
     @ViewBuilder
@@ -139,16 +145,16 @@ struct ReaderPane: View {
     @ViewBuilder
     private func chapterControls(_ book: EPUBBook) -> some View {
         let state = model.state
-        Button { state.chapterIndex -= 1 } label: { Image(systemName: "chevron.left") }
+        Button { state.chapterIndex -= 1 } label: { BarIcon("chevron.left") }
             .disabled(state.chapterIndex <= 0)
         Menu {
             ForEach(Array(book.chapters.enumerated()), id: \.offset) { i, chapter in
                 Button(chapter.title) { state.chapterIndex = i }
             }
         } label: {
-            Image(systemName: "list.bullet")
+            BarIcon("list.bullet")
         }
-        Button { state.chapterIndex += 1 } label: { Image(systemName: "chevron.right") }
+        Button { state.chapterIndex += 1 } label: { BarIcon("chevron.right") }
             .disabled(state.chapterIndex >= book.chapters.count - 1)
     }
 }

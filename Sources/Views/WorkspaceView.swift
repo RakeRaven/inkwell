@@ -9,6 +9,7 @@ struct ExportFile: Identifiable {
 struct WorkspaceView: View {
     @Environment(Library.self) private var library
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
     let item: LibraryItem
     private let tools = InkTools.shared
 
@@ -24,6 +25,76 @@ struct WorkspaceView: View {
     private var showsInk: Bool { notes != nil || annotating }
 
     var body: some View {
+        VStack(spacing: 0) {
+            if !focus { header }
+            panes
+        }
+        .background(Theme.paper)
+        .toolbar(.hidden, for: .navigationBar)
+        .statusBarHidden(focus)
+        .persistentSystemOverlays(focus ? .hidden : .automatic)
+        .onAppear(perform: load)
+        .onDisappear(perform: close)
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { flush() }
+        }
+        .sheet(item: $exportFile) { ShareSheet(url: $0.url) }
+        .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+            Button("OK") {}
+        }
+    }
+
+    /// Slim custom title bar, replacing the system navigation bar.
+    private var header: some View {
+        HStack(spacing: 4) {
+            Button { dismiss() } label: { BarIcon("chevron.left") }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(notes?.item.title ?? reader?.item.title ?? item.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.muted)
+                    .lineLimit(1)
+            }
+            .padding(.leading, 2)
+            Spacer()
+            if let reader, reader.pdf != nil {
+                Button { withAnimation(.snappy) { annotating.toggle() } } label: {
+                    BarIcon("pencil.tip.crop.circle", active: annotating)
+                }
+            }
+            if let reader, item.kind != .notebook {
+                Button {
+                    withAnimation(.snappy) { notes == nil ? openSideNotes(for: reader.item) : closeNotes() }
+                } label: {
+                    BarIcon("rectangle.split.2x1", active: notes != nil)
+                }
+            }
+            Button { withAnimation { focus = true } } label: { BarIcon("arrow.up.left.and.arrow.down.right") }
+            documentMenu
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .barStyle(height: 52)
+        .background(Theme.surface.ignoresSafeArea(edges: .top))
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+        switch item.kind {
+        case .notebook: parts.append("Notebook")
+        case .pdf: parts.append("PDF")
+        case .epub: parts.append("Book")
+        }
+        if item.kind == .notebook, let reader { parts.append("beside \(reader.item.title)") }
+        if item.kind != .notebook, notes != nil { parts.append("with notes") }
+        if annotating { parts.append("annotating") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var panes: some View {
         GeometryReader { geo in
             HStack(spacing: 0) {
                 if let reader {
@@ -55,6 +126,7 @@ struct WorkspaceView: View {
                 Button { withAnimation { focus = false } } label: {
                     Image(systemName: "arrow.down.right.and.arrow.up.left")
                         .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.ink)
                         .frame(width: 34, height: 34)
                         .background(.ultraThinMaterial, in: Circle())
                 }
@@ -62,28 +134,6 @@ struct WorkspaceView: View {
                 .opacity(0.7)
                 .padding(10)
             }
-        }
-        .toolbar(focus ? .hidden : .visible, for: .navigationBar)
-        .statusBarHidden(focus)
-        .persistentSystemOverlays(focus ? .hidden : .automatic)
-        .navigationTitle(reader?.item.title ?? notes?.item.title ?? item.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button { withAnimation { focus = true } } label: {
-                    Label("Focus", systemImage: "arrow.up.left.and.arrow.down.right")
-                }
-                documentMenu
-            }
-        }
-        .onAppear(perform: load)
-        .onDisappear(perform: close)
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { flush() }
-        }
-        .sheet(item: $exportFile) { ShareSheet(url: $0.url) }
-        .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
-            Button("OK") {}
         }
     }
 
@@ -117,7 +167,7 @@ struct WorkspaceView: View {
                 }
             }
         } label: {
-            Image(systemName: "pencil.and.outline")
+            BarIcon("ellipsis.circle")
         }
     }
 
@@ -278,11 +328,11 @@ struct WorkspaceView: View {
 private struct SplitHandle: View {
     var body: some View {
         Rectangle()
-            .fill(Color(.separator))
+            .fill(Theme.line)
             .frame(width: 1)
             .overlay {
                 Capsule()
-                    .fill(Color(.tertiaryLabel))
+                    .fill(Theme.muted.opacity(0.6))
                     .frame(width: 6, height: 44)
             }
             .frame(width: 14)

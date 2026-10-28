@@ -96,8 +96,8 @@ final class Library {
         save()
     }
 
-    /// `photo` is a newly picked image; the cover's existing photo is kept otherwise.
-    func setCover(_ id: UUID, to cover: Cover?, photo: UIImage? = nil) {
+    /// `photo` and `ink` are new edits; without them the cover keeps its existing files.
+    func setCover(_ id: UUID, to cover: Cover?, photo: UIImage? = nil, ink: PKDrawing? = nil) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
         var cover = cover
         let dir = folder(for: items[i])
@@ -107,10 +107,18 @@ final class Library {
                 cover?.photo = photoID
             }
         }
-        // drop photos the cover no longer uses
-        let keep = cover?.photo.map { "cover-\($0.uuidString).jpg" }
+        if cover != nil, let ink {
+            let inkID = UUID()
+            if ink.strokes.isEmpty {
+                cover?.ink = nil
+            } else if (try? ink.dataRepresentation().write(to: dir.appending(path: "cover-ink-\(inkID.uuidString).drawing"), options: .atomic)) != nil {
+                cover?.ink = inkID
+            }
+        }
+        // drop cover files the cover no longer uses
+        let keep = Set([cover?.photo.map { "cover-\($0.uuidString).jpg" }, cover?.ink.map { "cover-ink-\($0.uuidString).drawing" }].compactMap { $0 })
         let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        for file in files where file.hasPrefix("cover-") && file != keep {
+        for file in files where file.hasPrefix("cover-") && !keep.contains(file) {
             try? FileManager.default.removeItem(at: dir.appending(path: file))
         }
         items[i].cover = cover
@@ -120,6 +128,12 @@ final class Library {
     func coverPhoto(for item: LibraryItem) -> UIImage? {
         guard let id = item.cover?.photo else { return nil }
         return UIImage(contentsOfFile: folder(for: item).appending(path: "cover-\(id.uuidString).jpg").path)
+    }
+
+    func coverInk(for item: LibraryItem) -> PKDrawing? {
+        guard let id = item.cover?.ink,
+              let data = try? Data(contentsOf: folder(for: item).appending(path: "cover-ink-\(id.uuidString).drawing")) else { return nil }
+        return try? PKDrawing(data: data)
     }
 
     func workspaceState(for item: LibraryItem) -> WorkspaceState {

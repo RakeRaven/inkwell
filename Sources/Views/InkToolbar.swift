@@ -4,6 +4,7 @@ import UIKit
 /// Thin floating pen strip. Folds into a pill, fades while writing, or steps aside for Apple's picker.
 struct InkToolbar: View {
     private let tools = InkTools.shared
+    @State private var tuningWidth = false
 
     var body: some View {
         if tools.systemPicker {
@@ -13,7 +14,7 @@ struct InkToolbar: View {
                 Image(systemName: tools.pen.symbol)
                     .font(.system(size: 13, weight: .medium))
                     .frame(width: 46, height: 26)
-                    .background(.regularMaterial, in: Capsule())
+                    .background(Theme.surface.opacity(0.94), in: Capsule())
             }
             .buttonStyle(.plain)
             .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
@@ -33,8 +34,8 @@ struct InkToolbar: View {
                 Button { tools.select(kind) } label: {
                     Image(systemName: kind.symbol)
                         .frame(width: 30, height: 30)
-                        .foregroundStyle(kind == pen ? Color.accentColor : Color.primary)
-                        .background(kind == pen ? Color.accentColor.opacity(0.18) : .clear, in: Circle())
+                        .foregroundStyle(kind == pen ? Theme.accent : Theme.ink)
+                        .background(kind == pen ? Theme.accent.opacity(0.18) : .clear, in: Circle())
                 }
                 .accessibilityLabel(kind.title)
             }
@@ -44,10 +45,10 @@ struct InkToolbar: View {
                     Button { tools.setColor(index: i) } label: {
                         Circle()
                             .fill(Color(hex: settings.colors[i]))
-                            .overlay(Circle().stroke(Color.primary.opacity(0.25), lineWidth: 0.5))
+                            .overlay(Circle().stroke(Theme.ink.opacity(0.25), lineWidth: 0.5))
                             .frame(width: 18, height: 18)
                             .padding(3)
-                            .overlay(Circle().stroke(i == settings.colorIndex ? Color.accentColor : .clear, lineWidth: 2))
+                            .overlay(Circle().stroke(i == settings.colorIndex ? Theme.accent : .clear, lineWidth: 2))
                             .frame(width: 28, height: 30)
                     }
                 }
@@ -61,14 +62,21 @@ struct InkToolbar: View {
             }
             if !pen.widths.isEmpty, pen != .eraser || tools.pixelEraser {
                 separator
-                ForEach(pen.widths.indices, id: \.self) { i in
-                    Button { tools.setWidth(index: i) } label: {
+                let widths = tools.widths
+                let range = pen.widthRange
+                ForEach(widths.indices, id: \.self) { i in
+                    // tap a size to pick it, tap it again to fine-tune
+                    Button {
+                        if i == settings.widthIndex { tuningWidth = true } else { tools.setWidth(index: i) }
+                    } label: {
+                        let dot = 4 + 12 * (widths[i] - range.lowerBound) / (range.upperBound - range.lowerBound)
                         Circle()
-                            .fill(i == settings.widthIndex ? Color.accentColor : Color.secondary)
-                            .frame(width: CGFloat(5 + i * 4), height: CGFloat(5 + i * 4))
+                            .fill(i == settings.widthIndex ? Theme.accent : Theme.muted)
+                            .frame(width: dot, height: dot)
                             .frame(width: 24, height: 30)
                     }
                 }
+                .popover(isPresented: $tuningWidth) { widthTuner }
             }
             separator
             Button { tools.undo() } label: { Image(systemName: "arrow.uturn.backward").frame(width: 28, height: 30) }
@@ -82,9 +90,36 @@ struct InkToolbar: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .frame(height: 38)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color(.separator).opacity(0.5), lineWidth: 0.5))
+        .background(Theme.surface.opacity(0.94), in: Capsule())
+        .overlay(Capsule().stroke(Theme.line, lineWidth: 0.5))
         .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+    }
+
+    private var widthTuner: some View {
+        let pen = tools.pen
+        let range = pen.widthRange
+        let s = tools.current
+        let hex = s.colors.indices.contains(s.colorIndex) ? s.colors[s.colorIndex] : "1C1C1E"
+        return VStack(spacing: 14) {
+            HStack {
+                Text(pen.title).font(.headline)
+                Spacer()
+                Text(String(format: "%.1f pt", tools.width)).monospacedDigit().foregroundStyle(.secondary)
+            }
+            Capsule()
+                .fill(Color(hex: hex).opacity(pen == .highlighter ? 0.5 : 1))
+                .frame(width: 200, height: max(tools.width, 1))
+                .frame(height: 50)
+            HStack {
+                Button { tools.setWidthValue(tools.width - 0.1) } label: { Image(systemName: "minus") }
+                Slider(value: Binding(get: { Double(tools.width) }, set: { tools.setWidthValue(CGFloat($0)) }),
+                       in: Double(range.lowerBound)...Double(range.upperBound), step: 0.1)
+                Button { tools.setWidthValue(tools.width + 0.1) } label: { Image(systemName: "plus") }
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding()
+        .frame(width: 280)
     }
 
     private var separator: some View {
@@ -95,6 +130,9 @@ struct InkToolbar: View {
         Menu {
             Toggle(isOn: Binding(get: { tools.fingerDraws }, set: tools.setFingerDraws)) {
                 Label("Draw with Finger", systemImage: "hand.draw")
+            }
+            Toggle(isOn: Binding(get: { tools.holdShapes }, set: tools.setHoldShapes)) {
+                Label("Hold to Draw Shapes", systemImage: "square.on.circle")
             }
             Toggle(isOn: Binding(get: { tools.autoHide }, set: tools.setAutoHide)) {
                 Label("Hide While Writing", systemImage: "eye.slash")

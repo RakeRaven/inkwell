@@ -11,15 +11,18 @@ struct LibraryView: View {
     @State private var message: String?
     @State private var creating = false
     @State private var coverItem: LibraryItem?
+    @State private var filter: ItemKind?
+    private let appearance = Appearance.shared
 
     private var sortedItems: [LibraryItem] {
-        library.items.sorted { $0.modified > $1.modified }
+        library.items.filter { filter == nil || $0.kind == filter }.sorted { $0.modified > $1.modified }
     }
 
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 220), spacing: 24)], spacing: 28) {
+                header
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 160, maximum: 220), spacing: 28)], spacing: 32) {
                     ForEach(sortedItems) { item in
                         NavigationLink(value: item) { LibraryCell(item: item) }
                             .buttonStyle(.plain)
@@ -41,22 +44,17 @@ struct LibraryView: View {
                             }
                     }
                 }
-                .padding(24)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 20)
             }
+            .background(Theme.paper)
             .overlay {
-                if library.items.isEmpty {
+                if sortedItems.isEmpty {
                     ContentUnavailableView("Nothing here yet", systemImage: "books.vertical", description: Text("Create a notebook, or import a PDF or EPUB."))
+                        .foregroundStyle(Theme.muted)
                 }
             }
-            .navigationTitle("Inkwell")
-            .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button { importing = true } label: { Label("Import", systemImage: "square.and.arrow.down") }
-                    Button { creating = true } label: {
-                        Label("New Notebook", systemImage: "square.and.pencil")
-                    }
-                }
-            }
+            .toolbar(.hidden, for: .navigationBar)
             .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .epub], allowsMultipleSelection: true) { result in
                 switch result {
                 case .success(let urls):
@@ -96,6 +94,65 @@ struct LibraryView: View {
             }
         }
     }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 6) {
+                Text("Inkwell")
+                    .font(.system(size: 40, weight: .bold, design: .serif))
+                    .foregroundStyle(Theme.ink)
+                Spacer()
+                Menu {
+                    Picker("Accent", selection: Binding(get: { appearance.accent }, set: appearance.setAccent)) {
+                        ForEach(AccentTheme.allCases) { Text($0.title).tag($0) }
+                    }
+                    Picker("Appearance", selection: Binding(get: { appearance.scheme }, set: appearance.setScheme)) {
+                        ForEach(ColorSchemeChoice.allCases) { Text($0.title).tag($0) }
+                    }
+                } label: {
+                    BarIcon("paintpalette")
+                }
+                Button { importing = true } label: { BarIcon("square.and.arrow.down") }
+                    .buttonStyle(.plain)
+                Button { creating = true } label: {
+                    Label("New Notebook", systemImage: "plus")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .frame(height: 38)
+                        .background(Theme.accent, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 6)
+            }
+            HStack(spacing: 8) {
+                chip("All", kind: nil)
+                chip("Notebooks", kind: .notebook)
+                chip("PDFs", kind: .pdf)
+                chip("Books", kind: .epub)
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 18)
+    }
+
+    private func chip(_ title: String, kind: ItemKind?) -> some View {
+        let selected = filter == kind
+        let count = library.items.filter { kind == nil || $0.kind == kind }.count
+        return Button { withAnimation(.snappy) { filter = kind } } label: {
+            HStack(spacing: 6) {
+                Text(title)
+                Text("\(count)").foregroundStyle(selected ? Color.white.opacity(0.75) : Theme.muted)
+            }
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(selected ? Color.white : Theme.ink)
+            .padding(.horizontal, 14)
+            .frame(height: 32)
+            .background(selected ? Theme.accent : Theme.raised, in: Capsule())
+            .overlay(Capsule().stroke(selected ? Color.clear : Theme.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 private struct LibraryCell: View {
@@ -103,6 +160,7 @@ private struct LibraryCell: View {
     let item: LibraryItem
     @State private var thumbnail: UIImage?
     @State private var coverPhoto: UIImage?
+    @State private var coverInk: UIImage?
 
     private var icon: String {
         switch item.kind {
@@ -113,38 +171,44 @@ private struct LibraryCell: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 10).fill(Color(.secondarySystemBackground))
+                RoundedRectangle(cornerRadius: 12).fill(Theme.raised)
                 if let cover = item.cover {
-                    CoverView(cover: cover, title: item.title, photo: coverPhoto)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    CoverView(cover: cover, title: item.title, photo: coverPhoto, ink: coverInk)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 } else if let thumbnail {
                     Image(uiImage: thumbnail)
                         .resizable()
                         .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 } else {
                     Image(systemName: icon)
                         .font(.system(size: 40))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.muted)
                 }
             }
             .aspectRatio(0.72, contentMode: .fit)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
             .overlay(alignment: .bottomTrailing) {
                 Image(systemName: icon)
-                    .font(.caption)
-                    .padding(6)
-                    .background(.thinMaterial, in: Circle())
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 24, height: 24)
+                    .background(Theme.accent, in: Circle())
                     .padding(8)
             }
-            .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
-            Text(item.title)
-                .font(.headline)
-                .lineLimit(2)
-            Text(item.modified.formatted(date: .abbreviated, time: .shortened))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .shadow(color: Color(hex: "3A2A1A").opacity(0.14), radius: 10, y: 5)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(2)
+                Text(item.modified.formatted(.relative(presentation: .named)))
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.horizontal, 2)
         }
         .task(id: item.modified) {
             guard item.cover == nil else { return }
@@ -152,6 +216,7 @@ private struct LibraryCell: View {
         }
         .task(id: item.cover) {
             coverPhoto = library.coverPhoto(for: item)
+            coverInk = library.coverInk(for: item).map(CoverView.inkImage)
             if item.cover == nil, thumbnail == nil {
                 thumbnail = library.thumbnail(for: item, size: CGSize(width: 340, height: 472))
             }
