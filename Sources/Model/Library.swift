@@ -40,11 +40,11 @@ final class Library {
         items.first { $0.id == id }
     }
 
-    func createNotebook(title: String, companion: UUID? = nil, cover: Cover? = nil, paper: PaperStyle = .lined, paperColor: PaperColor = .white) -> LibraryItem {
+    func createNotebook(title: String, companion: UUID? = nil, cover: Cover? = nil, paper: PaperStyle = .lined, paperColor: PaperColor = .white, size: CGSize? = nil) -> LibraryItem {
         let item = LibraryItem(id: UUID(), kind: .notebook, title: title, created: .now, modified: .now, companion: companion, cover: cover)
         let dir = folder(for: item)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let notebook = Notebook(paper: paper, paperColor: paperColor)
+        let notebook = Notebook(paper: paper, paperColor: paperColor, size: size)
         try? JSONEncoder().encode(notebook).write(to: dir.appending(path: "notebook.json"), options: .atomic)
         items.insert(item, at: 0)
         save()
@@ -182,16 +182,24 @@ extension Library {
             let dir = folder(for: item)
             guard let notebook = NotebookStore.read(dir.appending(path: "notebook.json")),
                   let page = notebook.pages.first else { return nil }
-            let paper = PaperRenderer.image(notebook.style(of: page), color: notebook.color(of: page), width: size.width)
+            let pageSize = notebook.size(of: page)
+            let out = CGSize(width: size.width, height: (size.width * pageSize.height / pageSize.width).rounded())
+            var paper = PaperRenderer.image(notebook.style(of: page), color: notebook.color(of: page), width: out.width, pageSize: pageSize)
+            if let background = page.background,
+               let pdfPage = PDFDocument(url: dir.appending(path: "attachments/\(background.file)"))?.page(at: background.page) {
+                paper = pdfPage.thumbnail(of: out, for: .cropBox)
+            }
             var ink: UIImage?
             if let data = try? Data(contentsOf: dir.appending(path: "pages/\(page.id.uuidString).drawing")),
                let drawing = try? PKDrawing(data: data) {
                 UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
-                    ink = drawing.image(from: CGRect(origin: .zero, size: notebookPageSize), scale: size.width / notebookPageSize.width * 2)
+                    ink = drawing.image(from: CGRect(origin: .zero, size: pageSize), scale: out.width / pageSize.width * 2)
                 }
             }
-            return UIGraphicsImageRenderer(size: size).image { _ in
-                let rect = CGRect(origin: .zero, size: size)
+            return UIGraphicsImageRenderer(size: out).image { ctx in
+                let rect = CGRect(origin: .zero, size: out)
+                UIColor.white.setFill()
+                ctx.fill(rect)
                 paper.draw(in: rect)
                 ink?.draw(in: rect)
             }

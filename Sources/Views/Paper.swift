@@ -1,3 +1,5 @@
+import PDFKit
+import SwiftUI
 import UIKit
 
 extension PaperColor {
@@ -98,15 +100,29 @@ enum PaperRenderer {
         }
     }
 
-    static func image(_ style: PaperStyle, color: PaperColor, width: CGFloat) -> UIImage {
-        let scale = width / notebookPageSize.width
-        let size = CGSize(width: width, height: notebookPageSize.height * scale)
+    static func image(_ style: PaperStyle, color: PaperColor, width: CGFloat, pageSize: CGSize = notebookPageSize) -> UIImage {
+        let scale = width / pageSize.width
+        let size = CGSize(width: width, height: pageSize.height * scale)
         return UIGraphicsImageRenderer(size: size).image { r in
             color.fill.setFill()
             r.fill(CGRect(origin: .zero, size: size))
             r.cgContext.scaleBy(x: scale, y: scale)
-            draw(style, color: color, in: r.cgContext, size: notebookPageSize, weight: max(1, 0.6 / scale))
+            draw(style, color: color, in: r.cgContext, size: pageSize, weight: max(1, 0.6 / scale))
         }
+    }
+
+    /// Draws a PDF page fitted into `size`, on white.
+    static func draw(_ page: PDFPage, in ctx: CGContext, size: CGSize) {
+        ctx.setFillColor(UIColor.white.cgColor)
+        ctx.fill(CGRect(origin: .zero, size: size))
+        let box = page.bounds(for: .cropBox)
+        let scale = min(size.width / box.width, size.height / box.height)
+        ctx.saveGState()
+        // PDF space is y-up
+        ctx.translateBy(x: (size.width - box.width * scale) / 2, y: (size.height + box.height * scale) / 2)
+        ctx.scaleBy(x: scale, y: -scale)
+        page.draw(with: .cropBox, to: ctx)
+        ctx.restoreGState()
     }
 }
 
@@ -122,6 +138,10 @@ final class PaperView: UIView {
             setNeedsDisplay()
         }
     }
+    /// An inserted PDF page replaces the template.
+    var pdfPage: PDFPage? {
+        didSet { if pdfPage !== oldValue { setNeedsDisplay() } }
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -135,6 +155,93 @@ final class PaperView: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        PaperRenderer.draw(style, color: color, in: ctx, size: bounds.size)
+        if let pdfPage {
+            PaperRenderer.draw(pdfPage, in: ctx, size: bounds.size)
+        } else {
+            PaperRenderer.draw(style, color: color, in: ctx, size: bounds.size)
+        }
+    }
+}
+
+/// Small vector page icon: folded corner plus a hint of the template.
+struct PaperGlyph: View {
+    let style: PaperStyle
+    let color: PaperColor
+    var pdf = false
+
+    var body: some View {
+        Canvas { ctx, size in
+            let fold = size.width * 0.32
+            var page = Path()
+            page.move(to: CGPoint(x: 1, y: 1))
+            page.addLine(to: CGPoint(x: size.width - fold, y: 1))
+            page.addLine(to: CGPoint(x: size.width - 1, y: fold))
+            page.addLine(to: CGPoint(x: size.width - 1, y: size.height - 1))
+            page.addLine(to: CGPoint(x: 1, y: size.height - 1))
+            page.closeSubpath()
+            ctx.fill(page, with: .color(Color(uiColor: color.fill)))
+
+            let ink = GraphicsContext.Shading.color(color == .dark ? .white.opacity(0.7) : Theme.accent.opacity(0.8))
+            let left: CGFloat = 4, right = size.width - 4
+            var marks = Path()
+            if pdf {
+                for y in stride(from: size.height * 0.4, to: size.height - 4, by: 3.5) {
+                    marks.move(to: CGPoint(x: left, y: y))
+                    marks.addLine(to: CGPoint(x: y.truncatingRemainder(dividingBy: 7) < 3.5 ? right : right - 4, y: y))
+                }
+            } else {
+                switch style {
+                case .blank:
+                    break
+                case .grid, .smallGrid:
+                    let step: CGFloat = style == .grid ? 4 : 3
+                    for x in stride(from: left, through: right, by: step) {
+                        marks.move(to: CGPoint(x: x, y: fold))
+                        marks.addLine(to: CGPoint(x: x, y: size.height - 3))
+                    }
+                    for y in stride(from: fold, through: size.height - 3, by: step) {
+                        marks.move(to: CGPoint(x: left, y: y))
+                        marks.addLine(to: CGPoint(x: right, y: y))
+                    }
+                case .dotted:
+                    for x in stride(from: left, through: right, by: 3.5) {
+                        for y in stride(from: fold, through: size.height - 3, by: 3.5) {
+                            marks.addEllipse(in: CGRect(x: x - 0.6, y: y - 0.6, width: 1.2, height: 1.2))
+                        }
+                    }
+                case .music:
+                    for i in 0..<5 {
+                        let y = fold + CGFloat(i) * 1.8
+                        marks.move(to: CGPoint(x: left, y: y))
+                        marks.addLine(to: CGPoint(x: right, y: y))
+                    }
+                default:
+                    let step: CGFloat = style == .narrow ? 2.6 : style == .wide ? 4.4 : 3.4
+                    for y in stride(from: fold, through: size.height - 3, by: step) {
+                        marks.move(to: CGPoint(x: left, y: y))
+                        marks.addLine(to: CGPoint(x: right, y: y))
+                    }
+                }
+            }
+            if style == .dotted && !pdf {
+                ctx.fill(marks, with: ink)
+            } else {
+                ctx.stroke(marks, with: ink, lineWidth: 0.7)
+            }
+            if style == .margin || style == .cornell, !pdf {
+                var margin = Path()
+                margin.move(to: CGPoint(x: size.width * 0.32, y: 2))
+                margin.addLine(to: CGPoint(x: size.width * 0.32, y: size.height - 2))
+                ctx.stroke(margin, with: .color(.red.opacity(0.6)), lineWidth: 0.8)
+            }
+
+            var corner = Path()
+            corner.move(to: CGPoint(x: size.width - fold, y: 1))
+            corner.addLine(to: CGPoint(x: size.width - fold, y: fold))
+            corner.addLine(to: CGPoint(x: size.width - 1, y: fold))
+            ctx.stroke(page, with: .color(Theme.ink), style: StrokeStyle(lineWidth: 1.3, lineJoin: .round))
+            ctx.stroke(corner, with: .color(Theme.ink), style: StrokeStyle(lineWidth: 1.3, lineJoin: .round))
+        }
+        .frame(width: 16, height: 21)
     }
 }

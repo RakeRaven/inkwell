@@ -22,8 +22,30 @@ struct ShapeOutline {
     }
 }
 
-/// Turns a freehand path into a clean line, polyline, polygon or ellipse.
+/// Turns a freehand path into a clean line, polyline, polygon, rectangle or ellipse.
 enum ShapeRecognizer {
+    /// A possibly rotated box: the frame closed shapes are fitted in.
+    private struct Frame {
+        var center: CGPoint
+        var width: CGFloat
+        var height: CGFloat
+        var angle: CGFloat
+
+        func local(_ p: CGPoint) -> CGPoint {
+            let dx = p.x - center.x, dy = p.y - center.y
+            return CGPoint(x: dx * cos(angle) + dy * sin(angle), y: -dx * sin(angle) + dy * cos(angle))
+        }
+
+        func world(_ p: CGPoint) -> CGPoint {
+            CGPoint(x: center.x + p.x * cos(angle) - p.y * sin(angle), y: center.y + p.x * sin(angle) + p.y * cos(angle))
+        }
+
+        var corners: [CGPoint] {
+            let w = width / 2, h = height / 2
+            return [CGPoint(x: -w, y: -h), CGPoint(x: w, y: -h), CGPoint(x: w, y: h), CGPoint(x: -w, y: h)].map(world)
+        }
+    }
+
     static func outline(for raw: [CGPoint]) -> ShapeOutline? {
         guard raw.count > 4 else { return nil }
         let points = resample(raw, count: 96)
@@ -33,23 +55,24 @@ enum ShapeRecognizer {
         let length = pathLength(points)
         let gap = distance(first, last)
 
-        if gap < size * 0.2 {
-            if roundness(points, in: bounds) < 0.08 {
-                return ShapeOutline(points: ellipse(in: bounds, startingAt: first), sharp: false)
+        if gap < size * 0.25 {
+            let frame = tightestFrame(points)
+            let ellipseError = ellipseFit(points, in: frame)
+            let boxError = boxFit(points, in: frame)
+            let corners = removeFlat(simplifyClosed(points, epsilon: size * 0.06), closed: true, minEdge: size * 0.1)
+            if ellipseError < 0.08, ellipseError < boxError {
+                return ShapeOutline(points: ellipse(in: frame, startingAt: first), sharp: false)
             }
-            let corners = removeFlat(simplifyClosed(points, epsilon: size * 0.06), closed: true, minEdge: size * 0.08)
+            // a box hugging the stroke beats a lumpy four-corner trace, so wonky squares come out square
+            if boxError < 0.06 || (corners.count == 4 && boxError < 0.12) {
+                let box = frame.corners
+                return ShapeOutline(points: box + [box[0]], sharp: true)
+            }
             switch corners.count {
-            case 3:
-                return ShapeOutline(points: corners + [corners[0]], sharp: true)
-            case 4:
-                let quad = rectangle(corners, bounds: bounds) ?? corners
-                return ShapeOutline(points: quad + [quad[0]], sharp: true)
-            case 5...8:
+            case 3...8:
                 return ShapeOutline(points: corners + [corners[0]], sharp: true)
             default:
-                return roundness(points, in: bounds) < 0.15
-                    ? ShapeOutline(points: ellipse(in: bounds, startingAt: first), sharp: false)
-                    : nil
+                return ellipseError < 0.15 ? ShapeOutline(points: ellipse(in: frame, startingAt: first), sharp: false) : nil
             }
         }
 
@@ -59,6 +82,68 @@ enum ShapeRecognizer {
         let corners = removeFlat(rdp(points, epsilon: size * 0.06), closed: false, minEdge: size * 0.08)
         guard (3...5).contains(corners.count) else { return nil }
         return ShapeOutline(points: corners, sharp: true)
+    }
+
+    // Fitting
+
+    /// Smallest-area box around the points, tried every degree; near-upright boxes snap upright.
+    private static func tightestFrame(_ points: [CGPoint]) -> Frame {
+        var best = Frame(center: .zero, width: 0, height: 0, angle: 0)
+        var bestArea = CGFloat.infinity
+        for degree in 0..<90 {
+            let a = CGFloat(degree) * .pi / 180
+            let probe = Frame(center: .zero, width: 0, height: 0, angle: a)
+            let local = points.map(probe.local)
+            let box = boundingBox(local)
+            let area = box.width * box.height
+            if area < bestArea {
+                bestArea = area
+                best = Frame(center: probe.world(CGPoint(x: box.midX, y: box.midY)), width: box.width, height: box.height, angle: a)
+            }
+        }
+        let degrees = best.angle * 180 / .pi
+        if degrees < 8 || degrees > 82 {
+            let box = boundingBox(points)
+            best = Frame(center: CGPoint(x: box.midX, y: box.midY), width: box.width, height: box.height, angle: 0)
+        }
+        return best
+    }
+
+    /// Mean distance from the ellipse inscribed in the frame, relative to its size.
+    private static func ellipseFit(_ points: [CGPoint], in frame: Frame) -> CGFloat {
+        let rx = max(frame.width / 2, 1), ry = max(frame.height / 2, 1)
+        let total = points.reduce(CGFloat(0)) { sum, p in
+            let l = frame.local(p)
+            return sum + abs(hypot(l.x / rx, l.y / ry) - 1)
+        }
+        return total / CGFloat(points.count)
+    }
+
+    /// Mean distance from the frame's edges, relative to its shorter side.
+    private static func boxFit(_ points: [CGPoint], in frame: Frame) -> CGFloat {
+        let w = frame.width / 2, h = frame.height / 2
+        let side = max(min(frame.width, frame.height), 1)
+        let total = points.reduce(CGFloat(0)) { sum, p in
+            let l = frame.local(p)
+            return sum + min(abs(w - abs(l.x)), abs(h - abs(l.y)))
+        }
+        return total / CGFloat(points.count) / side
+    }
+
+    private static func ellipse(in frame: Frame, startingAt start: CGPoint) -> [CGPoint] {
+        var rx = frame.width / 2, ry = frame.height / 2
+        var frame = frame
+        if rx / max(ry, 1) > 0.88, rx / max(ry, 1) < 1.14 {
+            rx = (rx + ry) / 2
+            ry = rx
+            frame.angle = 0
+        }
+        let s = frame.local(start)
+        let begin = atan2(s.y / max(ry, 1), s.x / max(rx, 1))
+        return (0...80).map { i in
+            let t = begin + CGFloat(i) / 80 * 2 * .pi
+            return frame.world(CGPoint(x: rx * cos(t), y: ry * sin(t)))
+        }
     }
 
     // Geometry
@@ -99,16 +184,6 @@ enum ShapeRecognizer {
         }
         if result.count < count, let last = points.last { result.append(last) }
         return result
-    }
-
-    /// Spread of distances from the centre once the box is squashed square: low means ellipse.
-    private static func roundness(_ points: [CGPoint], in bounds: CGRect) -> CGFloat {
-        let w = max(bounds.width, 1), h = max(bounds.height, 1)
-        let radii = points.map { hypot(($0.x - bounds.midX) / w, ($0.y - bounds.midY) / h) }
-        let mean = radii.reduce(0, +) / CGFloat(radii.count)
-        guard mean > 0 else { return 1 }
-        let variance = radii.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / CGFloat(radii.count)
-        return variance.squareRoot() / mean
     }
 
     /// Ramer-Douglas-Peucker simplification of an open path.
@@ -165,7 +240,7 @@ enum ShapeRecognizer {
             let range = closed ? Array(v.indices) : Array(v.indices.dropFirst().dropLast())
             for i in range {
                 let prev = v[(i - 1 + v.count) % v.count], next = v[(i + 1) % v.count]
-                if angle(prev, v[i], next) > 155 || distance(prev, v[i]) < minEdge {
+                if angle(prev, v[i], next) > 150 || distance(prev, v[i]) < minEdge {
                     v.remove(at: i)
                     changed = true
                     break
@@ -173,47 +248,6 @@ enum ShapeRecognizer {
             }
         }
         return v
-    }
-
-    /// A true rectangle when all four corners are near right angles.
-    private static func rectangle(_ q: [CGPoint], bounds: CGRect) -> [CGPoint]? {
-        for i in 0..<4 where abs(angle(q[(i + 3) % 4], q[i], q[(i + 1) % 4]) - 90) > 18 {
-            return nil
-        }
-        let tilt = atan2(q[1].y - q[0].y, q[1].x - q[0].x) * 180 / .pi
-        let offAxis = abs(tilt.truncatingRemainder(dividingBy: 90))
-        if min(offAxis, 90 - offAxis) < 8 {
-            return [CGPoint(x: bounds.minX, y: bounds.minY), CGPoint(x: bounds.maxX, y: bounds.minY),
-                    CGPoint(x: bounds.maxX, y: bounds.maxY), CGPoint(x: bounds.minX, y: bounds.maxY)]
-        }
-        let center = CGPoint(x: q.map(\.x).reduce(0, +) / 4, y: q.map(\.y).reduce(0, +) / 4)
-        let ux = (q[1].x - q[0].x + q[2].x - q[3].x) / 2, uy = (q[1].y - q[0].y + q[2].y - q[3].y) / 2
-        let width = (distance(q[0], q[1]) + distance(q[3], q[2])) / 2
-        let height = (distance(q[1], q[2]) + distance(q[0], q[3])) / 2
-        let ul = hypot(ux, uy)
-        guard ul > 0 else { return nil }
-        let u = CGPoint(x: ux / ul, y: uy / ul)
-        var n = CGPoint(x: -u.y, y: u.x)
-        // keep the corner order the same way round as the drawing
-        let drawn = (q[2].x - q[1].x) * n.x + (q[2].y - q[1].y) * n.y
-        if drawn < 0 { n = CGPoint(x: -n.x, y: -n.y) }
-        func corner(_ a: CGFloat, _ b: CGFloat) -> CGPoint {
-            CGPoint(x: center.x + u.x * a * width / 2 + n.x * b * height / 2, y: center.y + u.y * a * width / 2 + n.y * b * height / 2)
-        }
-        return [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)]
-    }
-
-    private static func ellipse(in bounds: CGRect, startingAt start: CGPoint) -> [CGPoint] {
-        var rx = bounds.width / 2, ry = bounds.height / 2
-        if rx / max(ry, 1) > 0.88, rx / max(ry, 1) < 1.14 {
-            rx = (rx + ry) / 2
-            ry = rx
-        }
-        let begin = atan2(start.y - bounds.midY, start.x - bounds.midX)
-        return (0...80).map { i in
-            let t = begin + CGFloat(i) / 80 * 2 * .pi
-            return CGPoint(x: bounds.midX + rx * cos(t), y: bounds.midY + ry * sin(t))
-        }
     }
 
     /// Snaps near-horizontal and near-vertical lines straight.

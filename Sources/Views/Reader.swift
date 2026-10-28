@@ -62,28 +62,32 @@ struct Backlink: Identifiable {
 struct ReaderPane: View {
     let model: ReaderModel
     let annotating: Bool
-    let showsBar: Bool
+
+    var body: some View {
+        if let pdf = model.pdf {
+            PDFReader(document: pdf, annotations: model.annotations, annotating: annotating, state: model.state)
+        } else if let book = model.epub {
+            EPUBReader(book: book, state: model.state)
+        } else {
+            ContentUnavailableView("Can't Open", systemImage: "exclamationmark.triangle", description: Text(model.error ?? ""))
+        }
+    }
+}
+
+/// The reader's place and navigation, shown in the workspace's single top bar.
+struct ReaderControls: View {
+    let model: ReaderModel
     let backlinks: [Backlink]
     let onBacklink: (Int) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            if showsBar {
-                bar
-                Divider()
-            }
-            content
-        }
-    }
-
-    private var bar: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 2) {
             Text(location)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.muted)
                 .lineLimit(1)
-                .padding(.leading, 6)
-            Spacer()
+                .padding(.horizontal, 6)
+                .layoutPriority(-1)
             if !backlinks.isEmpty {
                 Menu {
                     ForEach(backlinks) { link in
@@ -112,34 +116,21 @@ struct ReaderPane: View {
             }
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 6)
-        .barStyle()
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if let pdf = model.pdf {
-            PDFReader(document: pdf, annotations: model.annotations, annotating: annotating, state: model.state)
-        } else if let book = model.epub {
-            EPUBReader(book: book, state: model.state)
-        } else {
-            ContentUnavailableView("Can't Open", systemImage: "exclamationmark.triangle", description: Text(model.error ?? ""))
-        }
     }
 
     private var location: String {
         let state = model.state
         if let pdf = model.pdf {
-            var text = "Page \(state.pageIndex + 1) of \(pdf.pageCount)"
+            var text = "p. \(state.pageIndex + 1)/\(pdf.pageCount)"
             if let chapter = model.chapters.last(where: { $0.page <= state.pageIndex }) {
-                text += " · \(chapter.title)"
+                text += " \u{00B7} \(chapter.title)"
             }
             return text
         }
         if let book = model.epub, book.chapters.indices.contains(state.chapterIndex) {
             return book.chapters[state.chapterIndex].title
         }
-        return model.item.title
+        return ""
     }
 
     @ViewBuilder

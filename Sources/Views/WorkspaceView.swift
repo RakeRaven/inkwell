@@ -14,15 +14,19 @@ struct WorkspaceView: View {
     private let tools = InkTools.shared
 
     @State private var reader: ReaderModel?
-    @State private var notes: NotebookStore?
+    @State private var session: NotesSession?
     @State private var annotating = false
     @State private var notePage = 0
     @State private var split: CGFloat = 0.5
     @State private var exportFile: ExportFile?
     @State private var message: String?
     @State private var focus = false
+    @State private var width: CGFloat = 1000
 
+    private var notes: NotebookStore? { session?.store }
     private var showsInk: Bool { notes != nil || annotating }
+    /// Icons only once both panes' controls share the bar on a narrow screen.
+    private var compact: Bool { width < (reader != nil && notes != nil ? 1180 : 760) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +34,7 @@ struct WorkspaceView: View {
             panes
         }
         .background(Theme.paper)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .toolbar(.hidden, for: .navigationBar)
         .statusBarHidden(focus)
         .persistentSystemOverlays(focus ? .hidden : .automatic)
@@ -44,32 +49,34 @@ struct WorkspaceView: View {
         }
     }
 
-    /// Slim custom title bar, replacing the system navigation bar.
+    /// The one bar: back and title, the reader's place, the notebook's tools, then mode toggles.
     private var header: some View {
         HStack(spacing: 4) {
             Button { dismiss() } label: { BarIcon("chevron.left") }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(notes?.item.title ?? reader?.item.title ?? item.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Theme.ink)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.muted)
-                    .lineLimit(1)
+            Text(notes?.item.title ?? reader?.item.title ?? item.title)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+                .layoutPriority(-1)
+            if let reader {
+                divider
+                ReaderControls(model: reader, backlinks: backlinks, onBacklink: { notePage = $0 })
             }
-            .padding(.leading, 2)
-            Spacer()
+            Spacer(minLength: 6)
+            if let session {
+                NotebookControls(session: session, pageIndex: $notePage, linkOptions: linkOptions, compact: compact)
+                divider
+            }
             if let reader, reader.pdf != nil {
                 Button { withAnimation(.snappy) { annotating.toggle() } } label: {
-                    BarIcon("pencil.tip.crop.circle", active: annotating)
+                    PillLabel(title: "Annotate", symbol: "pencil.tip.crop.circle", active: annotating, compact: compact)
                 }
             }
             if let reader, item.kind != .notebook {
                 Button {
-                    withAnimation(.snappy) { notes == nil ? openSideNotes(for: reader.item) : closeNotes() }
+                    withAnimation(.snappy) { session == nil ? openSideNotes(for: reader.item) : closeNotes() }
                 } label: {
-                    BarIcon("rectangle.split.2x1", active: notes != nil)
+                    PillLabel(title: "Notes", symbol: "rectangle.split.2x1", active: session != nil, compact: compact)
                 }
             }
             Button { withAnimation { focus = true } } label: { BarIcon("arrow.up.left.and.arrow.down.right") }
@@ -77,28 +84,19 @@ struct WorkspaceView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
-        .barStyle(height: 52)
+        .barStyle(height: 54)
         .background(Theme.surface.ignoresSafeArea(edges: .top))
     }
 
-    private var subtitle: String {
-        var parts: [String] = []
-        switch item.kind {
-        case .notebook: parts.append("Notebook")
-        case .pdf: parts.append("PDF")
-        case .epub: parts.append("Book")
-        }
-        if item.kind == .notebook, let reader { parts.append("beside \(reader.item.title)") }
-        if item.kind != .notebook, notes != nil { parts.append("with notes") }
-        if annotating { parts.append("annotating") }
-        return parts.joined(separator: " · ")
+    private var divider: some View {
+        Theme.line.frame(width: 1, height: 22).padding(.horizontal, 4)
     }
 
     private var panes: some View {
         GeometryReader { geo in
             HStack(spacing: 0) {
                 if let reader {
-                    ReaderPane(model: reader, annotating: annotating, showsBar: !focus, backlinks: backlinks, onBacklink: { notePage = $0 })
+                    ReaderPane(model: reader, annotating: annotating)
                         .id(reader.item.id)
                         .frame(width: notes == nil ? geo.size.width : max(geo.size.width * split - 7, 0))
                 }
@@ -108,8 +106,8 @@ struct WorkspaceView: View {
                             split = min(max(value.location.x / geo.size.width, 0.25), 0.75)
                         })
                 }
-                if let notes {
-                    NotebookPane(store: notes, pageIndex: $notePage, showsBar: !focus, linkOptions: linkOptions, onOpenLink: open)
+                if let session {
+                    NotebookPane(session: session, pageIndex: $notePage, linkOptions: linkOptions, onOpenLink: open)
                 }
             }
             .coordinateSpace(.named("workspace"))
@@ -118,7 +116,7 @@ struct WorkspaceView: View {
         .overlay(alignment: tools.atBottom ? .bottom : .top) {
             if showsInk {
                 InkToolbar()
-                    .padding(tools.atBottom ? Edge.Set.bottom : .top, tools.atBottom ? 14 : focus ? 10 : 54)
+                    .padding(tools.atBottom ? Edge.Set.bottom : .top, tools.atBottom ? 14 : 10)
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -141,15 +139,10 @@ struct WorkspaceView: View {
         Menu {
             if let reader {
                 if reader.pdf != nil {
-                    Toggle(isOn: $annotating) { Label("Annotate PDF", systemImage: "pencil.tip.crop.circle") }
                     Button { export(reader) } label: { Label("Export Annotated PDF", systemImage: "square.and.arrow.up") }
                 }
                 if item.kind == .notebook {
                     Button { closeReader() } label: { Label("Close \(reader.item.title)", systemImage: "xmark") }
-                } else {
-                    Toggle(isOn: Binding(get: { notes != nil }, set: { $0 ? openSideNotes(for: reader.item) : closeNotes() })) {
-                        Label("Notes on the Side", systemImage: "rectangle.split.2x1")
-                    }
                 }
             }
             if showsInk {
@@ -216,11 +209,11 @@ struct WorkspaceView: View {
 
     /// Reopens the item the way it was left.
     private func load() {
-        guard reader == nil, notes == nil else { return }
+        guard reader == nil, session == nil else { return }
         let saved = library.workspaceState(for: item)
         split = saved.split
         if item.kind == .notebook {
-            notes = NotebookStore(item: item, library: library)
+            session = NotesSession(store: NotebookStore(item: item, library: library))
             if let doc = saved.document.flatMap({ library.item($0) }) {
                 let model = ReaderModel(item: doc, library: library)
                 restore(model, from: saved)
@@ -273,12 +266,12 @@ struct WorkspaceView: View {
         let notebook = library.items.first { $0.kind == .notebook && $0.companion == doc.id }
             ?? library.createNotebook(title: "\(doc.title) Notes", companion: doc.id)
         notePage = 0
-        notes = NotebookStore(item: notebook, library: library)
+        session = NotesSession(store: NotebookStore(item: notebook, library: library))
     }
 
     private func closeNotes() {
         notes?.flush()
-        notes = nil
+        session = nil
     }
 
     private func closeReader() {
@@ -301,7 +294,11 @@ struct WorkspaceView: View {
     }
 
     private func open(_ link: NoteLink) {
-        guard let reader = openDocument(link.target.docID) else { return }
+        if case .web(let address) = link.target {
+            if let url = URL(string: address) { UIApplication.shared.open(url) }
+            return
+        }
+        guard let doc = link.target.docID, let reader = openDocument(doc) else { return }
         switch link.target {
         case .pdfPage(_, let page):
             reader.state.jump = PageJump(page: page)
@@ -309,6 +306,8 @@ struct WorkspaceView: View {
             if let i = reader.epub?.chapters.firstIndex(where: { $0.href == href }) {
                 reader.state.chapterIndex = i
             }
+        case .web:
+            break
         }
     }
 

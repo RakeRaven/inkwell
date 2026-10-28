@@ -103,12 +103,46 @@ struct BarIcon: View {
     }
 }
 
+/// A mode toggle in the top bar: a labelled pill, or just the icon when space is tight.
+struct PillLabel: View {
+    let title: String
+    let symbol: String
+    let active: Bool
+    let compact: Bool
+
+    var body: some View {
+        if compact {
+            BarIcon(symbol, active: active)
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                Text(title)
+            }
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(active ? Color.white : Theme.ink)
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .background(active ? Theme.accent : Theme.raised, in: Capsule())
+            .overlay(Capsule().stroke(active ? Color.clear : Theme.line, lineWidth: 1))
+            .padding(.horizontal, 2)
+        }
+    }
+}
+
 extension View {
     /// Slim bar look shared by the workspace header and the pane bars.
     func barStyle(height: CGFloat = 46) -> some View {
         frame(height: height)
             .background(Theme.surface)
             .overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
+    }
+
+    /// Raised rounded panel used in sheets.
+    func card() -> some View {
+        padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.raised, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Theme.line, lineWidth: 1))
     }
 
     func themedForm() -> some View {

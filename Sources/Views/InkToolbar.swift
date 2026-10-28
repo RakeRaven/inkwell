@@ -4,7 +4,6 @@ import UIKit
 /// Thin floating pen strip. Folds into a pill, fades while writing, or steps aside for Apple's picker.
 struct InkToolbar: View {
     private let tools = InkTools.shared
-    @State private var tuningWidth = false
 
     var body: some View {
         if tools.systemPicker {
@@ -62,21 +61,7 @@ struct InkToolbar: View {
             }
             if !pen.widths.isEmpty, pen != .eraser || tools.pixelEraser {
                 separator
-                let widths = tools.widths
-                let range = pen.widthRange
-                ForEach(widths.indices, id: \.self) { i in
-                    // tap a size to pick it, tap it again to fine-tune
-                    Button {
-                        if i == settings.widthIndex { tuningWidth = true } else { tools.setWidth(index: i) }
-                    } label: {
-                        let dot = 4 + 12 * (widths[i] - range.lowerBound) / (range.upperBound - range.lowerBound)
-                        Circle()
-                            .fill(i == settings.widthIndex ? Theme.accent : Theme.muted)
-                            .frame(width: dot, height: dot)
-                            .frame(width: 24, height: 30)
-                    }
-                }
-                .popover(isPresented: $tuningWidth) { widthTuner }
+                widthSlider
             }
             separator
             Button { tools.undo() } label: { Image(systemName: "arrow.uturn.backward").frame(width: 28, height: 30) }
@@ -95,31 +80,25 @@ struct InkToolbar: View {
         .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
     }
 
-    private var widthTuner: some View {
-        let pen = tools.pen
-        let range = pen.widthRange
-        let s = tools.current
-        let hex = s.colors.indices.contains(s.colorIndex) ? s.colors[s.colorIndex] : "1C1C1E"
-        return VStack(spacing: 14) {
-            HStack {
-                Text(pen.title).font(.headline)
-                Spacer()
-                Text(String(format: "%.1f pt", tools.width)).monospacedDigit().foregroundStyle(.secondary)
-            }
-            Capsule()
-                .fill(Color(hex: hex).opacity(pen == .highlighter ? 0.5 : 1))
-                .frame(width: 200, height: max(tools.width, 1))
-                .frame(height: 50)
-            HStack {
-                Button { tools.setWidthValue(tools.width - 0.1) } label: { Image(systemName: "minus") }
-                Slider(value: Binding(get: { Double(tools.width) }, set: { tools.setWidthValue(CGFloat($0)) }),
-                       in: Double(range.lowerBound)...Double(range.upperBound), step: 0.1)
-                Button { tools.setWidthValue(tools.width + 0.1) } label: { Image(systemName: "plus") }
-            }
-            .buttonStyle(.borderless)
+    /// Continuous size, with a dot that grows with it.
+    private var widthSlider: some View {
+        let range = tools.pen.widthRange
+        let fraction = (tools.width - range.lowerBound) / (range.upperBound - range.lowerBound)
+        return HStack(spacing: 6) {
+            Circle()
+                .fill(Theme.ink)
+                .frame(width: 3 + 11 * fraction, height: 3 + 11 * fraction)
+                .frame(width: 16)
+            Slider(value: Binding(get: { Double(tools.width) }, set: { tools.setWidthValue(CGFloat($0)) }),
+                   in: Double(range.lowerBound)...Double(range.upperBound))
+                .frame(width: 120)
+            Text(String(format: "%.1f", tools.width))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.muted)
+                .monospacedDigit()
+                .frame(width: 30, alignment: .leading)
         }
-        .padding()
-        .frame(width: 280)
+        .padding(.horizontal, 2)
     }
 
     private var separator: some View {

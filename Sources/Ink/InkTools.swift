@@ -80,8 +80,9 @@ struct PenSettings: Codable, Equatable {
     var colors: [String]
     var colorIndex = 0
     var widthIndex = 1
-    /// Fine-tuned preset sizes; nil uses the pen's defaults.
+    /// Older saves kept three preset sizes; `width` replaces them.
     var widths: [CGFloat]?
+    var width: CGFloat?
 }
 
 /// Pen state shared by every canvas, plus the compact toolbar's preferences.
@@ -146,6 +147,7 @@ final class InkTools {
     }
 
     var width: CGFloat {
+        if let width = current.width { return width }
         let all = widths
         return all.indices.contains(current.widthIndex) ? all[current.widthIndex] : all.first ?? 1
     }
@@ -188,18 +190,10 @@ final class InkTools {
         }
     }
 
-    func setWidth(index: Int) {
-        change { settings[pen.rawValue] = with(current) { $0.widthIndex = index } }
-    }
-
-    /// Fine-tunes the selected size preset.
     func setWidthValue(_ value: CGFloat) {
         let range = pen.widthRange
-        var all = widths
-        let index = current.widthIndex
-        guard all.indices.contains(index) else { return }
-        all[index] = min(max(value, range.lowerBound), range.upperBound)
-        change { settings[pen.rawValue] = with(current) { $0.widths = all } }
+        let clamped = min(max((value * 10).rounded() / 10, range.lowerBound), range.upperBound)
+        change { settings[pen.rawValue] = with(current) { $0.width = clamped } }
     }
 
     func setPixelEraser(_ on: Bool) { change { pixelEraser = on } }
