@@ -251,6 +251,7 @@ struct NotebookControls: View {
             } label: {
                 BarIcon(isLastPage ? "plus" : "chevron.right")
             }
+            bookmarks
             Menu {
                 Button { pageIndex = store.addPage(after: index) } label: { Label("Insert Page After", systemImage: "plus.square") }
                 Button(role: .destructive) { session.confirmDelete = true } label: { Label("Delete Page", systemImage: "trash") }
@@ -259,6 +260,30 @@ struct NotebookControls: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// Folded corners are bookmarks; this lists them and folds or unfolds the current page.
+    private var bookmarks: some View {
+        let page = pages[index]
+        let marked = pages.indices.filter { pages[$0].bookmarked }
+        return Menu {
+            Button {
+                store.update(page.id) { $0.folds = page.bookmarked ? nil : [.topRight] }
+            } label: {
+                Label(page.bookmarked ? "Remove Bookmark" : "Bookmark This Page", systemImage: page.bookmarked ? "bookmark.slash" : "bookmark")
+            }
+            if !marked.isEmpty {
+                Section("Bookmarks") {
+                    ForEach(marked, id: \.self) { i in
+                        Button { pageIndex = i } label: {
+                            Label("Page \(i + 1)", systemImage: i == index ? "bookmark.fill" : "bookmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            BarIcon(page.bookmarked ? "bookmark.fill" : "bookmark")
+        }
     }
 
     @ViewBuilder

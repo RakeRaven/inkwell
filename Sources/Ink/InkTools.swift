@@ -112,7 +112,7 @@ final class InkTools {
     private(set) var atBottom = false
     /// Hold the pencil still at the end of a stroke to snap it into a shape.
     private(set) var holdShapes = true
-    /// PencilKit's ruler: two fingers move and turn it, strokes along its edge come out straight.
+    /// The ruler on the page being written on.
     private(set) var ruler = false
     /// Strip folded into a small pill (grip button or Pencil squeeze).
     var collapsed = false
@@ -122,7 +122,15 @@ final class InkTools {
     @ObservationIgnored private let canvases = NSHashTable<InkController>.weakObjects()
     @ObservationIgnored private var reveal: DispatchWorkItem?
     /// Canvas that last took the pencil; undo/redo go to it.
-    @ObservationIgnored weak var active: InkController?
+    @ObservationIgnored weak var active: InkController? {
+        didSet {
+            guard active !== oldValue else { return }
+            for ink in canvases.allObjects { ink.onToolsChanged?() }
+        }
+    }
+    /// Where the ruler lies on the page, kept while turning pages.
+    @ObservationIgnored var rulerMiddle: CGPoint?
+    @ObservationIgnored var rulerAngle: CGFloat = 0
 
     private init() {
         guard let data = UserDefaults.standard.data(forKey: Self.key),

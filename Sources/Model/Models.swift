@@ -311,6 +311,21 @@ struct NotePage: Codable, Identifiable, Equatable {
     var paperColor: PaperColor?
     var size: CGSize?
     var background: PageBackground?
+    /// Dog-eared corners; a page with any is bookmarked.
+    var folds: [PageCorner]?
+
+    var bookmarked: Bool { !(folds ?? []).isEmpty }
+}
+
+enum PageCorner: String, Codable, CaseIterable {
+    case topLeft, topRight, bottomLeft, bottomRight
+
+    var isLeft: Bool { self == .topLeft || self == .bottomLeft }
+    var isTop: Bool { self == .topLeft || self == .topRight }
+
+    func point(in rect: CGRect) -> CGPoint {
+        CGPoint(x: isLeft ? rect.minX : rect.maxX, y: isTop ? rect.minY : rect.maxY)
+    }
 }
 
 extension NotePage {
@@ -326,6 +341,7 @@ extension NotePage {
         paperColor = try c.decodeIfPresent(PaperColor.self, forKey: .paperColor)
         size = try c.decodeIfPresent(CGSize.self, forKey: .size)
         background = try c.decodeIfPresent(PageBackground.self, forKey: .background)
+        folds = try c.decodeIfPresent([PageCorner].self, forKey: .folds)
     }
 }
 

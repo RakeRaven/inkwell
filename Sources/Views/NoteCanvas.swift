@@ -72,6 +72,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             overlay.isUserInteractionEnabled = mode != .arrange
             applyScrolling()
             rebuildOverlay()
+            updateRuler()
         }
     }
 
@@ -95,6 +96,66 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     }
     let spine = SpineShade()
     private var applyingBookZoom = false
+    private let foldView = FoldView()
+    private let rulerLayer = PassthroughView()
+    private var ruler: RulerView?
+    private lazy var cornerPress = UILongPressGestureRecognizer(target: self, action: #selector(cornerPressed(_:)))
+    private let cornerGate = GestureGate()
+
+    private func raiseLayers() {
+        canvas.bringSubviewToFront(overlay)
+        canvas.bringSubviewToFront(foldView)
+        canvas.bringSubviewToFront(rulerLayer)
+    }
+
+    /// The corner a finger is holding, in a zone that stays the same size on screen.
+    private func corner(at point: CGPoint) -> PageCorner? {
+        let reach = max(FoldView.size, 60 / max(canvas.zoomScale, 0.1))
+        let page = CGRect(origin: .zero, size: pageSize)
+        return PageCorner.allCases.first { corner in
+            let c = corner.point(in: page)
+            return hypot(point.x - c.x, point.y - c.y) < reach
+        }
+    }
+
+    @objc private func cornerPressed(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began, let corner = corner(at: gesture.location(in: overlay)) else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        let folding = !(page?.folds ?? []).contains(corner)
+        let fade = CATransition()
+        fade.type = .fade
+        fade.duration = 0.2
+        foldView.layer.add(fade, forKey: "fold")
+        editPage(folding ? "Fold Corner" : "Unfold Corner") { page in
+            var folds = page.folds ?? []
+            if folding { folds.append(corner) } else { folds.removeAll { $0 == corner } }
+            page.folds = folds.isEmpty ? nil : folds
+        }
+    }
+
+    /// Shows the ruler on the page being written on, and only there.
+    private func updateRuler() {
+        let tools = InkTools.shared
+        guard tools.ruler, tools.active === ink, window != nil, mode == .draw else {
+            ruler?.removeFromSuperview()
+            ruler = nil
+            return
+        }
+        let view = ruler ?? RulerView()
+        if ruler == nil {
+            ruler = view
+            rulerLayer.addSubview(view)
+            view.onMove = { middle, angle in
+                tools.rulerMiddle = middle
+                tools.rulerAngle = angle
+            }
+        }
+        let page = CGRect(origin: .zero, size: pageSize)
+        var middle = tools.rulerMiddle ?? visibleCenter()
+        middle.x = min(max(middle.x, page.minX), page.maxX)
+        middle.y = min(max(middle.y, page.minY), page.maxY)
+        view.place(at: middle, angle: tools.rulerAngle)
+    }
 
     private func applyScrolling() {
         // a book page only pans once zoomed in, otherwise fingers turn pages
@@ -117,15 +178,22 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         applyingBookZoom = false
     }
 
-    private func reportBookZoom() {
-        guard bookMode, let zoom = bookZoom, !applyingBookZoom, fitScale > 0,
-              canvas.isZooming || canvas.isZoomBouncing || canvas.isDragging || canvas.isDecelerating else { return }
+    /// Passes this page's zoom to the rest of the book while a finger moves it, and once more when it settles.
+    private func reportBookZoom(settled: Bool = false) {
+        guard bookMode, let zoom = bookZoom, !applyingBookZoom, fitScale > 0 else { return }
+        guard settled || canvas.isZooming || canvas.isZoomBouncing || canvas.isDragging || canvas.isDecelerating else { return }
         let size = canvas.contentSize
         guard size.width > 0, size.height > 0 else { return }
         let offset = canvas.contentOffset, view = canvas.bounds.size
-        zoom.update(scale: canvas.zoomScale / fitScale,
-                    center: CGPoint(x: (offset.x + view.width / 2) / size.width, y: (offset.y + view.height / 2) / size.height),
-                    from: self)
+        var scale = canvas.zoomScale / fitScale
+        var center = CGPoint(x: (offset.x + view.width / 2) / size.width, y: (offset.y + view.height / 2) / size.height)
+        if scale < 1.03 {
+            // back at the whole page: settle exactly so page turns come back
+            scale = 1
+            center = CGPoint(x: 0.5, y: 0.5)
+            if settled, abs(canvas.zoomScale - fitScale) > 0.0001 { canvas.setZoomScale(fitScale, animated: true) }
+        }
+        zoom.update(scale: scale, center: center, from: self)
         applyScrolling()
     }
 
@@ -182,7 +250,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         spine.isHidden = true
         addSubview(spine)
 
-        for view in [paper, media, shapesView, overlay] as [UIView] {
+        for view in [paper, media, shapesView, overlay, foldView, rulerLayer] as [UIView] {
             view.bounds = CGRect(origin: .zero, size: pageSize)
         }
         media.isUserInteractionEnabled = false
@@ -191,6 +259,18 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         canvas.insertSubview(media, aboveSubview: paper)
         canvas.insertSubview(shapesView, aboveSubview: media)
         canvas.addSubview(overlay)
+        canvas.addSubview(foldView)
+        canvas.addSubview(rulerLayer)
+
+        // hold a page corner to fold it over and bookmark the page
+        cornerPress.minimumPressDuration = 0.45
+        cornerPress.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+        cornerPress.delegate = cornerGate
+        canvas.addGestureRecognizer(cornerPress)
+        cornerGate.shouldBegin = { [weak self] gesture in
+            guard let self, self.mode == .draw else { return false }
+            return self.corner(at: gesture.location(in: self.overlay)) != nil
+        }
 
         selectionLayer.fillColor = Theme.uiAccent.withAlphaComponent(0.08).cgColor
         selectionLayer.strokeColor = Theme.uiAccent.cgColor
@@ -248,6 +328,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             self?.reportBookZoom()
         }
         ink.onScroll = { [weak self] in self?.reportBookZoom() }
+        ink.onScrollEnd = { [weak self] in self?.reportBookZoom(settled: true) }
+        ink.onToolsChanged = { [weak self] in self?.updateRuler() }
+        ink.adjustStroke = { [weak self] stroke in self?.ruler?.straightened(stroke) }
         ink.extrasHit = { [weak self] area in
             guard let self else { return false }
             return !self.boxes(in: area).isEmpty || !self.shapes(in: area).isEmpty
@@ -272,7 +355,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     func show(_ page: NotePage, paper style: PaperStyle, color: PaperColor, size: CGSize, background: PDFPage?, drawing: () -> PKDrawing) {
         if size != pageSize {
             pageSize = size
-            for view in [paper, media, shapesView, overlay] as [UIView] {
+            for view in [paper, media, shapesView, overlay, foldView, rulerLayer] as [UIView] {
                 view.bounds = CGRect(origin: .zero, size: size)
             }
             fittedSize = .zero
@@ -353,6 +436,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil { ink.activate() }
+        updateRuler()
     }
 
     override func layoutSubviews() {
@@ -377,12 +461,13 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         let zoom = canvas.zoomScale
         let size = CGSize(width: pageSize.width * zoom, height: pageSize.height * zoom)
         canvas.contentSize = size
-        for view in [paper, media, shapesView, overlay] as [UIView] {
+        for view in [paper, media, shapesView, overlay, foldView, rulerLayer] as [UIView] {
             view.transform = CGAffineTransform(scaleX: zoom, y: zoom)
             view.center = CGPoint(x: size.width / 2, y: size.height / 2)
         }
         let inset = max(0, (canvas.bounds.width - size.width) / 2)
-        let top = bookMode ? max(0, (canvas.bounds.height - size.height) / 2) : 0
+        // a page smaller than the view sits in the middle, not at the top
+        let top = max(0, (canvas.bounds.height - size.height) / 2)
         canvas.contentInset = UIEdgeInsets(top: top, left: inset, bottom: top, right: inset)
         // sharper paper when zoomed, but only redrawn on real changes and capped to keep memory down
         let scale = min(traitCollection.displayScale * zoom, 3)
@@ -393,7 +478,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             }
         }
         layoutHandles()
-        canvas.bringSubviewToFront(overlay)
+        raiseLayers()
     }
 
     /// Draws everything now, so a page curl snapshot isn't blank.
@@ -452,6 +537,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             }
         }
         shapesView.selected = selectedShape
+        foldView.folds = page.folds ?? []
+        foldView.paperColor = paper.color.fill
+        foldView.behind = backgroundColor ?? Theme.uiPaper
         for image in page.images {
             let view = UIImageView(image: imageProvider?(image.file))
             view.frame = image.frame
@@ -484,7 +572,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         overlay.layer.addSublayer(selectionLayer)
         handleViews = []
         layoutHandles()
-        canvas.bringSubviewToFront(overlay)
+        raiseLayers()
     }
 
     private var inkColor: UIColor {

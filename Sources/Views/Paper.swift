@@ -245,3 +245,78 @@ struct PaperGlyph: View {
         .frame(width: 16, height: 21)
     }
 }
+
+/// Dog-eared corners: the tip folded over onto the page, showing the paper's back.
+final class FoldView: UIView {
+    static let size: CGFloat = 56
+
+    var folds: [PageCorner] = [] {
+        didSet { if folds != oldValue { setNeedsDisplay() } }
+    }
+    var paperColor: UIColor = .white {
+        didSet { setNeedsDisplay() }
+    }
+    /// What shows where the tip was turned away.
+    var behind: UIColor = .clear {
+        didSet { setNeedsDisplay() }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        let s = Self.size
+        for corner in folds {
+            let tip = corner.point(in: bounds)
+            let dx: CGFloat = corner.isLeft ? 1 : -1, dy: CGFloat = corner.isTop ? 1 : -1
+            let a = CGPoint(x: tip.x + dx * s, y: tip.y)
+            let b = CGPoint(x: tip.x, y: tip.y + dy * s)
+            // the tip mirrored over the crease
+            let folded = CGPoint(x: a.x + b.x - tip.x, y: a.y + b.y - tip.y)
+
+            let gone = UIBezierPath()
+            gone.move(to: tip)
+            gone.addLine(to: a)
+            gone.addLine(to: b)
+            gone.close()
+            ctx.setBlendMode(.copy)
+            behind.setFill()
+            gone.fill()
+            ctx.setBlendMode(.normal)
+
+            let flap = UIBezierPath()
+            flap.move(to: a)
+            flap.addLine(to: folded)
+            flap.addLine(to: b)
+            flap.close()
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: -dx * 2, height: -dy * 3), blur: 7, color: UIColor.black.withAlphaComponent(0.3).cgColor)
+            paperColor.setFill()
+            flap.fill()
+            ctx.restoreGState()
+
+            // shading from the crease out to the folded tip
+            ctx.saveGState()
+            flap.addClip()
+            let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+            let colors = [UIColor.black.withAlphaComponent(0.16).cgColor, UIColor.white.withAlphaComponent(0.12).cgColor] as CFArray
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
+                ctx.drawLinearGradient(gradient, start: mid, end: folded, options: [])
+            }
+            ctx.restoreGState()
+            UIColor.black.withAlphaComponent(0.12).setStroke()
+            flap.lineWidth = 0.75
+            flap.stroke()
+        }
+    }
+}

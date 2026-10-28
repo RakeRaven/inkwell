@@ -10,6 +10,12 @@ final class InkController: NSObject, PKCanvasViewDelegate {
     var onChange: ((PKDrawing) -> Void)?
     var onZoom: (() -> Void)?
     var onScroll: (() -> Void)?
+    /// A pinch or pan has come to rest.
+    var onScrollEnd: (() -> Void)?
+    /// Tools or the active canvas changed.
+    var onToolsChanged: (() -> Void)?
+    /// Gets each new stroke first; a returned stroke replaces it (ruler lines).
+    var adjustStroke: ((PKStroke) -> PKStroke?)?
     /// Whether a scribble over this area would erase non-ink content (e.g. text boxes).
     var extrasHit: ((CGRect) -> Bool)?
     var eraseExtras: ((CGRect) -> Void)?
@@ -89,7 +95,6 @@ final class InkController: NSObject, PKCanvasViewDelegate {
             picker.removeObserver(canvas)
             canvas.tool = tools.tool
             canvas.drawingPolicy = fingerAllowed && tools.fingerDraws ? .anyInput : .pencilOnly
-            canvas.isRulerActive = tools.ruler
         }
         // the picker only shows or hides when the first responder changes
         let system = tools.systemPicker && !ownStrip
@@ -100,6 +105,7 @@ final class InkController: NSObject, PKCanvasViewDelegate {
         usedSystemPicker = system
         let types: [UITouch.TouchType] = pencilOnly ? [.pencil] : [.pencil, .direct]
         tracker.allowedTouchTypes = types.map { $0.rawValue as NSNumber }
+        onToolsChanged?()
     }
 
     /// Whether fingers are free for gestures instead of drawing.
@@ -138,13 +144,21 @@ final class InkController: NSObject, PKCanvasViewDelegate {
 
         let replaying = canvasView.undoManager.map { $0.isUndoing || $0.isRedoing } ?? false
         guard let added, !replaying else { return }
-        if let snapCount, strokes.count == snapCount + 1 {
-            // PencilKit kept the stroke we cut short; the shape already replaced it
-            self.snapCount = nil
-            DispatchQueue.main.async { [weak self] in self?.dropPencilKitStep(leaving: snapCount) }
+        if let snapCount {
+            // anything PencilKit adds after a snap is the cut-short stroke or the pencil's wiggle, never a scribble
+            if strokes.count > snapCount {
+                DispatchQueue.main.async { [weak self] in self?.dropPencilKitStep(leaving: snapCount) }
+            }
         } else if added.ink.inkType != .marker, InkAnalyzer.isScribble(added) {
             // let PencilKit finish registering the stroke before touching undo
             DispatchQueue.main.async { [weak self] in self?.eraseScribble(expectedCount: strokes.count) }
+        } else if let straight = adjustStroke?(added) {
+            let count = strokes.count
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.canvas.drawing.strokes.count == count else { return }
+                self.dropPencilKitStep(leaving: count - 1)
+                self.commit(PKDrawing(strokes: self.canvas.drawing.strokes + [straight]), name: "Line")
+            }
         }
     }
 
@@ -165,6 +179,18 @@ final class InkController: NSObject, PKCanvasViewDelegate {
         onScroll?()
     }
 
+    func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+        onScrollEnd?()
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { onScrollEnd?() }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        onScrollEnd?()
+    }
+
     private func eraseScribble(expectedCount: Int) {
         var strokes = canvas.drawing.strokes
         guard strokes.count == expectedCount, let scribble = strokes.popLast() else { return }
@@ -180,6 +206,7 @@ final class InkController: NSObject, PKCanvasViewDelegate {
 
     /// Undoes PencilKit's own "add stroke" step so our replacement undoes cleanly.
     private func dropPencilKitStep(leaving count: Int) {
+        guard canvas.drawing.strokes.count > count else { return }
         suppress = true
         canvas.undoManager?.undo()
         if canvas.drawing.strokes.count != count {
@@ -187,6 +214,12 @@ final class InkController: NSObject, PKCanvasViewDelegate {
         }
         suppress = false
         strokeCount = canvas.drawing.strokes.count
+        // undo held something else on top: take the stray strokes off directly
+        if strokeCount > count {
+            let kept = PKDrawing(strokes: Array(canvas.drawing.strokes.prefix(count)))
+            load(kept)
+            onChange?(kept)
+        }
     }
 
     @objc private func drawingGesture(_ gesture: UIGestureRecognizer) {
