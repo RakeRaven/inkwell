@@ -222,6 +222,10 @@ struct CoverPicker: View {
                 Text("Cover").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink)
             }
             if let current = draft.cover {
+                if drawing {
+                    InkToolbar(always: true)
+                        .frame(maxWidth: .infinity)
+                }
                 HStack(alignment: .top, spacing: 28) {
                     VStack(spacing: 14) {
                         preview(current)
@@ -600,7 +604,7 @@ struct CoverPicker: View {
     }
 }
 
-/// Handwriting on a cover, with its own tool picker.
+/// Handwriting on a cover, with the same pens and strip as the pages.
 struct CoverInkCanvas: UIViewRepresentable {
     @Binding var drawing: PKDrawing
     let active: Bool
@@ -609,43 +613,37 @@ struct CoverInkCanvas: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> PKCanvasView {
-        let canvas = PKCanvasView()
-        canvas.backgroundColor = .clear
-        canvas.isOpaque = false
-        canvas.overrideUserInterfaceStyle = .light
-        canvas.drawingPolicy = .anyInput
-        canvas.isScrollEnabled = false
-        canvas.drawing = drawing
-        canvas.delegate = context.coordinator
-        context.coordinator.picker.colorUserInterfaceStyle = .light
-        context.coordinator.picker.addObserver(canvas)
-        return canvas
+        let ink = context.coordinator.ink
+        ink.ownStrip = true
+        ink.canvas.isScrollEnabled = false
+        ink.load(drawing)
+        ink.onChange = { [weak coordinator = context.coordinator] drawing in
+            guard let parent = coordinator?.parent, drawing != parent.drawing else { return }
+            parent.drawing = drawing
+            parent.onEdit()
+        }
+        return ink.canvas
     }
 
     func updateUIView(_ canvas: PKCanvasView, context: Context) {
+        let ink = context.coordinator.ink
         context.coordinator.parent = self
-        if canvas.drawing != drawing { canvas.drawing = drawing }
+        // Cancel and clear put an older drawing back
+        if canvas.drawing != drawing { ink.load(drawing) }
         canvas.isUserInteractionEnabled = active
-        context.coordinator.picker.setVisible(active, forFirstResponder: canvas)
         if active {
-            canvas.becomeFirstResponder()
+            ink.activate()
         } else if canvas.isFirstResponder {
             canvas.resignFirstResponder()
         }
     }
 
-    final class Coordinator: NSObject, PKCanvasViewDelegate {
+    final class Coordinator {
         var parent: CoverInkCanvas
-        let picker = PKToolPicker()
+        let ink = InkController()
 
         init(_ parent: CoverInkCanvas) {
             self.parent = parent
-        }
-
-        func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-            guard canvasView.drawing != parent.drawing else { return }
-            parent.drawing = canvasView.drawing
-            parent.onEdit()
         }
     }
 }

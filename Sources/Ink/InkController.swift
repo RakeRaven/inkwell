@@ -20,6 +20,10 @@ final class InkController: NSObject, PKCanvasViewDelegate {
     var fingerAllowed = true {
         didSet { applyTools() }
     }
+    /// Sticks with our pen strip even when Apple's picker is chosen (covers).
+    var ownStrip = false {
+        didSet { applyTools() }
+    }
 
     private var suppress = false
     private var strokeCount = 0
@@ -74,7 +78,7 @@ final class InkController: NSObject, PKCanvasViewDelegate {
     func applyTools() {
         let tools = InkTools.shared
         let picker = Self.toolPicker
-        if tools.systemPicker {
+        if tools.systemPicker && !ownStrip {
             picker.addObserver(canvas)
             picker.setVisible(true, forFirstResponder: canvas)
             canvas.tool = picker.selectedTool
@@ -87,11 +91,12 @@ final class InkController: NSObject, PKCanvasViewDelegate {
             canvas.isRulerActive = tools.ruler
         }
         // the picker only shows or hides when the first responder changes
-        if usedSystemPicker != nil, usedSystemPicker != tools.systemPicker, canvas.isFirstResponder {
+        let system = tools.systemPicker && !ownStrip
+        if usedSystemPicker != nil, usedSystemPicker != system, canvas.isFirstResponder {
             canvas.resignFirstResponder()
             canvas.becomeFirstResponder()
         }
-        usedSystemPicker = tools.systemPicker
+        usedSystemPicker = system
         let types: [UITouch.TouchType] = pencilOnly ? [.pencil] : [.pencil, .direct]
         tracker.allowedTouchTypes = types.map { $0.rawValue as NSNumber }
     }

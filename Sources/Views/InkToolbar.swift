@@ -4,9 +4,11 @@ import UIKit
 /// Thin floating pen strip. Folds into a pill, fades while writing, or steps aside for Apple's picker.
 struct InkToolbar: View {
     private let tools = InkTools.shared
+    /// Shown even when Apple's picker is chosen, for canvases that always use the strip.
+    var always = false
 
     var body: some View {
-        if tools.systemPicker {
+        if tools.systemPicker && !always {
             EmptyView()
         } else if tools.collapsed {
             Button { withAnimation(.snappy) { tools.collapsed = false } } label: {
