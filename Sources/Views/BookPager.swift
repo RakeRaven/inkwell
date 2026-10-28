@@ -5,9 +5,11 @@ import UIKit
 
 /// Turns pages with a real page curl: drag to fold the page and hold it there,
 /// flick or drag past halfway to turn, let go early to drop it back.
+/// `spread` shows two pages side by side like an open book.
 struct PageCurlPager: UIViewControllerRepresentable {
     let count: Int
     @Binding var index: Int
+    let spread: Bool
     let makePage: (Int) -> UIView
     /// Refreshes the page on screen when its content changes.
     let refresh: (UIView, Int) -> Void
@@ -15,13 +17,15 @@ struct PageCurlPager: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIViewController(context: Context) -> UIPageViewController {
+        let spine: UIPageViewController.SpineLocation = spread ? .mid : .min
         let pager = UIPageViewController(transitionStyle: .pageCurl, navigationOrientation: .horizontal,
-                                         options: [.spineLocation: NSNumber(value: UIPageViewController.SpineLocation.min.rawValue)])
-        pager.isDoubleSided = false
+                                         options: [.spineLocation: NSNumber(value: spine.rawValue)])
+        pager.isDoubleSided = spread
         pager.dataSource = context.coordinator
         pager.delegate = context.coordinator
         pager.view.backgroundColor = Theme.uiPaper
-        pager.setViewControllers([context.coordinator.host(clamped(index))], direction: .forward, animated: false)
+        context.coordinator.pager = pager
+        pager.setViewControllers(context.coordinator.hosts(at: index), direction: .forward, animated: false)
         // fingers turn pages; the pencil keeps writing
         for gesture in pager.gestureRecognizers {
             gesture.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
@@ -30,32 +34,55 @@ struct PageCurlPager: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ pager: UIPageViewController, context: Context) {
-        context.coordinator.parent = self
+        let coordinator = context.coordinator
+        coordinator.parent = self
         guard let current = pager.viewControllers?.first as? PageHost else { return }
-        let target = clamped(index)
+        let target = coordinator.first(of: index)
         if current.index != target {
             // jumps from the bar or links turn the page too
-            pager.setViewControllers([context.coordinator.host(target)], direction: target > current.index ? .forward : .reverse, animated: true)
+            pager.setViewControllers(coordinator.hosts(at: index), direction: target > current.index ? .forward : .reverse, animated: true)
         } else {
-            refresh(current.view, target)
+            for case let host as PageHost in pager.viewControllers ?? [] {
+                refresh(host.view, host.index)
+            }
         }
-    }
-
-    private func clamped(_ i: Int) -> Int {
-        min(max(i, 0), max(count - 1, 0))
     }
 
     final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
         var parent: PageCurlPager
+        weak var pager: UIPageViewController?
 
         init(_ parent: PageCurlPager) {
             self.parent = parent
         }
 
+        /// The page shown first (on the left in a spread) for a page index.
+        func first(of index: Int) -> Int {
+            let i = min(max(index, 0), max(parent.count - 1, 0))
+            return parent.spread ? i - i % 2 : i
+        }
+
+        /// Pages beyond the end become blank paper so a spread always has a right-hand page.
+        private var last: Int {
+            parent.spread && parent.count % 2 == 1 ? parent.count : parent.count - 1
+        }
+
+        func hosts(at index: Int) -> [PageHost] {
+            let start = first(of: index)
+            return parent.spread ? [host(start), host(start + 1)] : [host(start)]
+        }
+
         func host(_ index: Int) -> PageHost {
-            let host = PageHost(index: index, content: parent.makePage(index))
-            parent.refresh(host.view, index)
-            return host
+            let content = parent.makePage(index)
+            // size and draw it before the curl snapshots it, or the turning page shows blank
+            if let bounds = pager?.view.bounds, bounds.width > 0 {
+                content.frame = CGRect(x: 0, y: 0, width: parent.spread ? bounds.width / 2 : bounds.width, height: bounds.height)
+            }
+            parent.refresh(content, index)
+            content.layoutIfNeeded()
+            (content as? NoteCanvasView)?.prepareForSnapshot()
+            (content as? PDFBookPage)?.prepareForSnapshot()
+            return PageHost(index: index, content: content)
         }
 
         func pageViewController(_ pager: UIPageViewController, viewControllerBefore vc: UIViewController) -> UIViewController? {
@@ -64,14 +91,14 @@ struct PageCurlPager: UIViewControllerRepresentable {
         }
 
         func pageViewController(_ pager: UIPageViewController, viewControllerAfter vc: UIViewController) -> UIViewController? {
-            guard let i = (vc as? PageHost)?.index, i < parent.count - 1 else { return nil }
+            guard let i = (vc as? PageHost)?.index, i < last else { return nil }
             return host(i + 1)
         }
 
         func pageViewController(_ pager: UIPageViewController, didFinishAnimating finished: Bool,
                                 previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
             guard completed, let current = pager.viewControllers?.first as? PageHost else { return }
-            parent.index = current.index
+            parent.index = min(current.index, max(parent.count - 1, 0))
         }
     }
 }
@@ -118,6 +145,11 @@ final class PDFBookPage: UIView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    func prepareForSnapshot() {
+        layoutIfNeeded()
+        paper.layer.displayIfNeeded()
     }
 
     var annotating = false {

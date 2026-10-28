@@ -52,19 +52,23 @@ struct NotebookPane: View {
     @ViewBuilder
     private var pageView: some View {
         if bookMode {
-            PageCurlPager(count: pages.count, index: $pageIndex, makePage: { _ in
-                let view = NoteCanvasView()
-                view.bookMode = true
-                return view
-            }, refresh: { view, i in
-                guard let canvas = view as? NoteCanvasView, pages.indices.contains(i) else { return }
-                canvas.onModeDone = { session.mode = .draw }
-                canvas.bind(store: store, page: pages[i], onOpenLink: onOpenLink, onLinkArea: { session.linkArea = $0 })
-                if i == index {
-                    canvas.mode = session.mode
-                    session.handle.view = canvas
-                }
-            })
+            GeometryReader { geo in
+                let spread = geo.size.width > geo.size.height * 1.1
+                PageCurlPager(count: pages.count, index: $pageIndex, spread: spread, makePage: { _ in
+                    let view = NoteCanvasView()
+                    view.bookMode = true
+                    return view
+                }, refresh: { view, i in
+                    guard let canvas = view as? NoteCanvasView, pages.indices.contains(i) else { return }
+                    canvas.onModeDone = { session.mode = .draw }
+                    canvas.bind(store: store, page: pages[i], onOpenLink: onOpenLink, onLinkArea: { session.linkArea = $0 })
+                    if i == index {
+                        canvas.mode = session.mode
+                        session.handle.view = canvas
+                    }
+                })
+                .id(spread)
+            }
         } else {
             NoteCanvas(store: store, page: pages[index], mode: $session.mode, handle: session.handle, onOpenLink: onOpenLink,
                        onSwipe: swipe, onLinkArea: { session.linkArea = $0 })
@@ -197,6 +201,19 @@ struct NotebookControls: View {
             Menu {
                 Button { session.handle.view?.beginNewText() } label: { Label("Text", systemImage: "textformat") }
                 Button { session.pickingPhoto = true } label: { Label("Image", systemImage: "photo") }
+                Menu {
+                    Button { session.handle.view?.insertShape(.equilateral) } label: { Label("Equilateral Triangle", systemImage: "triangle") }
+                    Button { session.handle.view?.insertShape(.rightTriangle) } label: { Label("Right Triangle", systemImage: "righttriangle") }
+                    Button { session.handle.view?.insertShape(.square) } label: { Label("Square", systemImage: "square") }
+                    Button { session.handle.view?.insertShape(.circle) } label: { Label("Circle", systemImage: "circle") }
+                    Button { session.handle.view?.insertShape(.line) } label: { Label("Line", systemImage: "line.diagonal") }
+                    Button { session.handle.view?.insertShape(.angle) } label: { Label("Angle", systemImage: "angle") }
+                } label: {
+                    Label("Geometry", systemImage: "triangle")
+                }
+                Button { session.handle.view?.insertShape(.projectile) } label: {
+                    Label("Projectile (Physics)", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                }
                 Button {
                     session.interleave = false
                     session.importingPDF = true

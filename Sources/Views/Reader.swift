@@ -67,11 +67,16 @@ struct ReaderPane: View {
     var body: some View {
         if let pdf = model.pdf {
             if bookMode {
-                PageCurlPager(count: pdf.pageCount, index: Binding(get: { model.state.pageIndex }, set: { model.state.pageIndex = $0 }), makePage: { i in
-                    PDFBookPage(page: pdf.page(at: i) ?? PDFPage(), annotations: model.annotations, key: String(i))
-                }, refresh: { view, _ in
-                    (view as? PDFBookPage)?.annotating = annotating
-                })
+                GeometryReader { geo in
+                    let spread = geo.size.width > geo.size.height * 1.1
+                    PageCurlPager(count: pdf.pageCount, index: Binding(get: { model.state.pageIndex }, set: { model.state.pageIndex = $0 }),
+                                  spread: spread, makePage: { i in
+                        PDFBookPage(page: pdf.page(at: i) ?? PDFPage(), annotations: model.annotations, key: String(i))
+                    }, refresh: { view, _ in
+                        (view as? PDFBookPage)?.annotating = annotating
+                    })
+                    .id(spread)
+                }
             } else {
                 PDFReader(document: pdf, annotations: model.annotations, annotating: annotating, state: model.state)
             }

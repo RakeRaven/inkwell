@@ -22,7 +22,9 @@ Personal, open-source iPad note-taking app: handwritten notebooks, a PDF/EPUB re
   - **Export Annotated PDF**: a copy with your ink burned in.
 - **Links**: with notes on the side, the link button in the notes bar pins a chip to the current PDF page, the PDF chapter (from the outline) or the EPUB chapter. Tapping a chip jumps the reader there (and opens the document if it's closed). The reader's bar shows which note pages link to the page you're on. Long-press a chip to remove it.
 - **Pens**: fountain, ball and brush pens, pencil, highlighter, eraser (whole strokes or pixels) and lasso. Each pen keeps its own four colours (pick a custom one to replace the selected swatch) and its own size, set with a slider in 0.1pt steps.
-- **Hold to draw shapes**: pause at the end of a stroke and it snaps into a line, triangle, rectangle, polygon, circle or ellipse while the pencil is still down; keep dragging to resize it (a line's end follows the pencil). Pencil Pro gives a tap when it snaps.
+- **Hold to draw shapes**: pause at the end of a stroke and it snaps into a line, angle, triangle, rectangle, polygon, circle or ellipse while the pencil is still down; keep dragging to resize it. Loops that overshoot or fall short of their start still count as closed, and smooth loops become circles. Pencil Pro gives a tap when it snaps.
+- **Editable geometry**: snapped and inserted shapes stay editable. Tap one with a finger for corner handles and an inspector: type a triangle's angles (the other two stay in proportion), make it equilateral, isosceles or right-angled, make polygons regular or squares square, ellipses round, set a line's length and angle, and show side lengths (cm) and angles on the page.
+- **Physics**: insert a projectile, drag its start and velocity arrow, and it draws the trajectory with range, peak height and flight time. Set speed, angle, launch height, scale and gravity (Earth, Moon, Mars, Jupiter or custom).
 - **Toolbar**: a thin floating strip that fades while you write and comes back when you pause. Fold it into a pill with the chevron or a Pencil Pro squeeze, move it to the bottom, or undock to Apple's tool picker from its `...` menu (redock from the pencil menu).
 - **Pencil and touch**:
   - Pencil double-tap follows your system setting (switch to eraser, previous tool, or show the strip).
@@ -32,7 +34,7 @@ Personal, open-source iPad note-taking app: handwritten notebooks, a PDF/EPUB re
   - **Handwriting to text**: tap the viewfinder button, drag a box over your handwriting, and it becomes a text box (undoable). Tap a text box to copy, edit or delete it.
   - Pinch to zoom, finger drawing on/off from the tool picker.
 
-- **Book Mode**: the book button turns pages with a real page curl, for notes and PDFs. Drag to fold the page and hold it, flick or drag past halfway to turn, let go early to drop it back. Fingers turn pages, the Pencil writes.
+- **Book Mode**: the book button turns pages with a real page curl, for notes and PDFs, as a two-page spread when the pane is wider than tall. Drag to fold the page and hold it, flick or drag past halfway to turn, let go early to drop it back. Fingers turn pages, the Pencil writes.
 - **Hide either side**: with notes beside a document, the PDF and Notes buttons show or hide each side.
 - **One top bar**: back, title, the reader's page and outline, the notebook's tools and page controls, and dedicated Annotate and Notes buttons. It collapses to icons when space is tight.
 - **Look**: warm paper tones, and an accent colour (plum, rose, ink, forest, amber or mono) plus light/dark/system from the palette button in the library.

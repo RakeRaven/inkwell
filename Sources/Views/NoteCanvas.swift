@@ -14,6 +14,11 @@ enum CanvasMode {
     case arrange
 }
 
+/// Ready-made shapes for the insert menu.
+enum ShapePreset {
+    case equilateral, rightTriangle, square, circle, line, angle, projectile
+}
+
 /// Lets toolbar actions reach the live canvas (e.g. to place things where the user is looking).
 final class CanvasHandle {
     weak var view: NoteCanvasView?
@@ -45,7 +50,7 @@ struct NoteCanvas: UIViewRepresentable {
 }
 
 /// One notebook page: paper, pictures, ink, and an overlay of text boxes and links, all zooming together.
-final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
+final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPresentationControllerDelegate {
     var onDrawingChange: ((PKDrawing) -> Void)?
     var onEditPage: (((inout NotePage) -> Void) -> Void)?
     var onLinkTap: ((NoteLink) -> Void)?
@@ -90,6 +95,17 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
     private var canvas: PKCanvasView { ink.canvas }
     private let paper = PaperView()
     private let media = UIView()
+    private let shapesView = ShapeLayerView()
+    private var liveShape: ShapeItem?
+    private var selectedShape: UUID?
+    private var editor: ShapeEditor?
+    private weak var inspector: UIViewController?
+    private var handleViews: [UIView] = []
+    /// A handle or the whole selected shape is being dragged; the page copy is stale till it ends.
+    private var shapeDrag: (start: CGPoint, base: ShapeItem)?
+    private lazy var shapeTap = UITapGestureRecognizer(target: self, action: #selector(shapeTapped(_:)))
+    private lazy var shapeMove = UIPanGestureRecognizer(target: self, action: #selector(shapeMoved(_:)))
+    private let shapeGate = GestureGate()
     private let overlay = PassthroughView()
     private let selectionLayer = CAShapeLayer()
     private lazy var selectionGesture = UIPanGestureRecognizer(target: self, action: #selector(selectionPan(_:)))
@@ -113,7 +129,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
     private var menuItem: Item?
 
     private enum Item: Equatable {
-        case text(UUID), link(UUID), image(UUID)
+        case text(UUID), link(UUID), image(UUID), shape(UUID)
     }
 
     override init(frame: CGRect) {
@@ -126,13 +142,14 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
         canvas.contentInsetAdjustmentBehavior = .never
         addSubview(canvas)
 
-        for view in [paper, media, overlay] as [UIView] {
+        for view in [paper, media, shapesView, overlay] as [UIView] {
             view.bounds = CGRect(origin: .zero, size: pageSize)
         }
         media.isUserInteractionEnabled = false
         // pictures sit between the paper and the ink so you can write on them
         canvas.insertSubview(paper, at: 0)
         canvas.insertSubview(media, aboveSubview: paper)
+        canvas.insertSubview(shapesView, aboveSubview: media)
         canvas.addSubview(overlay)
 
         selectionLayer.fillColor = Theme.uiAccent.withAlphaComponent(0.08).cgColor
@@ -147,6 +164,24 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
             canvas.addGestureRecognizer(gesture)
         }
         addInteraction(editMenu)
+
+        // fingers select shapes and move them; the pencil keeps drawing
+        for gesture in [shapeTap, shapeMove] as [UIGestureRecognizer] {
+            gesture.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+            gesture.delegate = shapeGate
+            canvas.addGestureRecognizer(gesture)
+        }
+        shapeMove.maximumNumberOfTouches = 1
+        canvas.panGestureRecognizer.require(toFail: shapeMove)
+        shapeGate.shouldBegin = { [weak self] gesture in
+            guard let self, self.mode == .draw else { return false }
+            let point = gesture.location(in: self.overlay)
+            if gesture === self.shapeTap {
+                return self.shape(at: point) != nil || self.selectedShape != nil
+            }
+            guard let id = self.selectedShape, let shape = self.page?.shapes.first(where: { $0.id == id }) else { return false }
+            return shape.distance(to: point) < 24
+        }
 
         // one finger turns pages when fingers don't draw, two fingers when they do
         for touches in [1, 2] {
@@ -169,12 +204,21 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
             self?.scheduleMath()
         }
         ink.onZoom = { [weak self] in self?.syncZoom() }
-        ink.extrasHit = { [weak self] area in !(self?.boxes(in: area).isEmpty ?? true) }
+        ink.extrasHit = { [weak self] area in
+            guard let self else { return false }
+            return !self.boxes(in: area).isEmpty || !self.shapes(in: area).isEmpty
+        }
         ink.eraseExtras = { [weak self] area in
             guard let self else { return }
-            let ids = Set(self.boxes(in: area).map(\.id))
-            self.editPage("Scribble Erase") { page in page.textBoxes.removeAll { ids.contains($0.id) } }
+            let ids = Set(self.boxes(in: area).map(\.id)), shapeIDs = Set(self.shapes(in: area).map(\.id))
+            self.editPage("Scribble Erase") { page in
+                page.textBoxes.removeAll { ids.contains($0.id) }
+                page.shapes.removeAll { shapeIDs.contains($0.id) }
+            }
         }
+        ink.onShapeBegin = { [weak self] outline, tool in self?.beginLiveShape(outline, tool: tool) ?? false }
+        ink.onShapeChange = { [weak self] outline in self?.updateLiveShape(outline) }
+        ink.onShapeEnd = { [weak self] in self?.endLiveShape() }
     }
 
     required init?(coder: NSCoder) {
@@ -184,7 +228,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
     func show(_ page: NotePage, paper style: PaperStyle, color: PaperColor, size: CGSize, background: PDFPage?, drawing: () -> PKDrawing) {
         if size != pageSize {
             pageSize = size
-            for view in [paper, media, overlay] as [UIView] {
+            for view in [paper, media, shapesView, overlay] as [UIView] {
                 view.bounds = CGRect(origin: .zero, size: size)
             }
             fittedSize = .zero
@@ -285,7 +329,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
         let zoom = canvas.zoomScale
         let size = CGSize(width: pageSize.width * zoom, height: pageSize.height * zoom)
         canvas.contentSize = size
-        for view in [paper, media, overlay] as [UIView] {
+        for view in [paper, media, shapesView, overlay] as [UIView] {
             view.transform = CGAffineTransform(scaleX: zoom, y: zoom)
             view.center = CGPoint(x: size.width / 2, y: size.height / 2)
         }
@@ -295,10 +339,20 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
         // sharper paper when zoomed, but only redrawn on real changes and capped to keep memory down
         let scale = min(traitCollection.displayScale * zoom, 3)
         if abs(scale - paper.contentScaleFactor) / scale > 0.15 {
-            paper.contentScaleFactor = scale
-            paper.setNeedsDisplay()
+            for view in [paper, shapesView] as [UIView] {
+                view.contentScaleFactor = scale
+                view.setNeedsDisplay()
+            }
         }
+        layoutHandles()
         canvas.bringSubviewToFront(overlay)
+    }
+
+    /// Draws everything now, so a page curl snapshot isn't blank.
+    func prepareForSnapshot() {
+        layoutIfNeeded()
+        paper.layer.displayIfNeeded()
+        shapesView.layer.displayIfNeeded()
     }
 
     private func visibleCenter() -> CGPoint {
@@ -341,6 +395,15 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
         linkViews.removeAll()
         imageViews.removeAll()
         guard let page else { return }
+        shapesView.shapes = page.shapes
+        if let id = selectedShape {
+            if let current = page.shapes.first(where: { $0.id == id }) {
+                if shapeDrag == nil { editor?.shape = current }
+            } else {
+                deselectShape()
+            }
+        }
+        shapesView.selected = selectedShape
         for image in page.images {
             let view = UIImageView(image: imageProvider?(image.file))
             view.frame = image.frame
@@ -371,6 +434,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
             }
         }
         overlay.layer.addSublayer(selectionLayer)
+        handleViews = []
+        layoutHandles()
         canvas.bringSubviewToFront(overlay)
     }
 
@@ -496,6 +561,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
         for box in page.textBoxes.reversed() where box.anchor == nil && boxViews[box.id]?.frame.insetBy(dx: -8, dy: -8).contains(point) == true {
             return .text(box.id)
         }
+        if let hit = shape(at: point) {
+            return .shape(hit.id)
+        }
         for image in page.images.reversed() where image.frame.contains(point) {
             return .image(image.id)
         }
@@ -507,6 +575,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
         case .text(let id): boxViews[id]
         case .link(let id): linkViews[id]
         case .image(let id): imageViews[id]
+        case .shape: nil
         }
     }
 
@@ -517,8 +586,13 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
             guard let item = item(at: point) else { return }
             dragging = (item, point)
         case .changed:
-            guard let dragging, let view = view(for: dragging.item) else { return }
-            view.transform = CGAffineTransform(translationX: point.x - dragging.start.x, y: point.y - dragging.start.y)
+            guard let dragging else { return }
+            let d = CGSize(width: point.x - dragging.start.x, height: point.y - dragging.start.y)
+            if case .shape(let id) = dragging.item {
+                shapesView.preview = page?.shapes.first { $0.id == id }?.translated(by: d)
+            } else if let view = view(for: dragging.item) {
+                view.transform = CGAffineTransform(translationX: d.width, y: d.height)
+            }
         case .ended:
             guard let dragging else { return }
             self.dragging = nil
@@ -540,8 +614,13 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
                     if let i = page.images.firstIndex(where: { $0.id == id }) {
                         page.images[i].frame = page.images[i].frame.offsetBy(dx: dx, dy: dy)
                     }
+                case .shape(let id):
+                    if let i = page.shapes.firstIndex(where: { $0.id == id }) {
+                        page.shapes[i] = page.shapes[i].translated(by: CGSize(width: dx, height: dy))
+                    }
                 }
             }
+            shapesView.preview = nil
         default:
             dragging = nil
             rebuildOverlay()
@@ -555,8 +634,12 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
             pinching = item(at: gesture.location(in: overlay))
             if case .link = pinching { pinching = nil }
         case .changed:
-            guard let pinching, let view = view(for: pinching) else { return }
-            view.transform = CGAffineTransform(scaleX: gesture.scale, y: gesture.scale)
+            guard let pinching else { return }
+            if case .shape(let id) = pinching {
+                shapesView.preview = page?.shapes.first { $0.id == id }?.scaled(by: gesture.scale)
+            } else if let view = view(for: pinching) {
+                view.transform = CGAffineTransform(scaleX: gesture.scale, y: gesture.scale)
+            }
         case .ended:
             guard let pinching else { return }
             self.pinching = nil
@@ -573,12 +656,18 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
                         let w = max(f.width * scale, 40), h = max(f.height * scale, 40)
                         page.images[i].frame = CGRect(x: f.midX - w / 2, y: f.midY - h / 2, width: w, height: h)
                     }
+                case .shape(let id):
+                    if let i = page.shapes.firstIndex(where: { $0.id == id }) {
+                        page.shapes[i] = page.shapes[i].scaled(by: scale)
+                    }
                 case .link:
                     break
                 }
             }
+            shapesView.preview = nil
         default:
             pinching = nil
+            shapesView.preview = nil
             rebuildOverlay()
         }
     }
@@ -595,16 +684,256 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
         if case .text(let id) = item, let box = page?.textBoxes.first(where: { $0.id == id }) {
             actions.append(UIAction(title: "Edit", image: UIImage(systemName: "pencil")) { [weak self] _ in self?.edit(box) })
         }
+        if case .shape(let id) = item {
+            actions.append(UIAction(title: "Edit Shape", image: UIImage(systemName: "slider.horizontal.3")) { [weak self] _ in
+                self?.onModeDone?()
+                self?.selectShape(id)
+            })
+        }
         actions.append(UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
             self?.editPage("Delete") { page in
                 switch item {
                 case .text(let id): page.textBoxes.removeAll { $0.id == id }
                 case .link(let id): page.links.removeAll { $0.id == id }
                 case .image(let id): page.images.removeAll { $0.id == id }
+                case .shape(let id): page.shapes.removeAll { $0.id == id }
                 }
             }
         })
         return UIMenu(children: actions)
+    }
+
+    // Shapes
+
+    private func shape(at point: CGPoint) -> ShapeItem? {
+        page?.shapes.reversed().first { $0.distance(to: point) < 16 }
+    }
+
+    private func shapes(in area: CGRect) -> [ShapeItem] {
+        (page?.shapes ?? []).filter { shape in
+            let b = shape.bounds.insetBy(dx: -2, dy: -2)
+            let overlap = b.intersection(area)
+            return !overlap.isNull && overlap.width * overlap.height >= b.width * b.height * 0.5
+        }
+    }
+
+    private static func style(from tool: PKTool) -> ShapeItem? {
+        guard let pen = tool as? PKInkingTool else { return nil }
+        var shape = ShapeItem(kind: .line, points: [])
+        shape.color = pen.color.hex
+        shape.width = max(pen.width, 1.5)
+        if pen.inkType == .marker { shape.opacity = 0.4 }
+        return shape
+    }
+
+    private static func shape(from outline: ShapeOutline, style: ShapeItem) -> ShapeItem {
+        var shape = style
+        if let e = outline.ellipse {
+            shape.kind = .ellipse
+            shape.points = [e.center]
+            shape.radii = e.radii
+            shape.rotation = Double(e.angle)
+        } else if outline.isLine {
+            shape.kind = .line
+            shape.points = outline.points
+        } else if outline.closed {
+            shape.kind = .polygon
+            shape.points = Array(outline.points.dropLast())
+        } else {
+            shape.kind = .polyline
+            shape.points = outline.points
+        }
+        return shape
+    }
+
+    private func beginLiveShape(_ outline: ShapeOutline, tool: PKTool) -> Bool {
+        guard let style = Self.style(from: tool) else { return false }
+        liveShape = Self.shape(from: outline, style: style)
+        shapesView.preview = liveShape
+        return true
+    }
+
+    private func updateLiveShape(_ outline: ShapeOutline) {
+        guard let live = liveShape else { return }
+        liveShape = Self.shape(from: outline, style: live)
+        shapesView.preview = liveShape
+    }
+
+    private func endLiveShape() {
+        guard let live = liveShape else { return }
+        liveShape = nil
+        shapesView.preview = nil
+        editPage("Shape") { $0.shapes.append(live) }
+    }
+
+    func insertShape(_ preset: ShapePreset) {
+        let c = visibleCenter()
+        let tools = InkTools.shared
+        let settings = tools.settings(for: .ball)
+        var shape = ShapeItem(kind: .polygon, points: [])
+        shape.color = settings.colors[safe: settings.colorIndex] ?? "1C1C1E"
+        shape.width = 3
+        shape.measures = true
+        let r: CGFloat = 110
+        switch preset {
+        case .equilateral:
+            shape.points = (0..<3).map { i in
+                let t = -CGFloat.pi / 2 + CGFloat(i) * 2 * .pi / 3
+                return CGPoint(x: c.x + r * cos(t), y: c.y + r * sin(t))
+            }
+        case .rightTriangle:
+            shape.points = [CGPoint(x: c.x - r, y: c.y + r * 0.6), CGPoint(x: c.x + r, y: c.y + r * 0.6), CGPoint(x: c.x - r, y: c.y - r * 0.8)]
+        case .square:
+            shape.points = [CGPoint(x: c.x - r, y: c.y - r), CGPoint(x: c.x + r, y: c.y - r), CGPoint(x: c.x + r, y: c.y + r), CGPoint(x: c.x - r, y: c.y + r)]
+        case .circle:
+            shape.kind = .ellipse
+            shape.points = [c]
+            shape.radii = CGSize(width: r, height: r)
+        case .line:
+            shape.kind = .line
+            shape.points = [CGPoint(x: c.x - r, y: c.y), CGPoint(x: c.x + r, y: c.y)]
+        case .angle:
+            shape.kind = .polyline
+            shape.points = [CGPoint(x: c.x + r, y: c.y - r * 0.9), CGPoint(x: c.x - r * 0.6, y: c.y + r * 0.4), CGPoint(x: c.x + r * 1.2, y: c.y + r * 0.4)]
+        case .projectile:
+            shape.kind = .projectile
+            shape.points = [CGPoint(x: c.x - 240, y: c.y + 120)]
+            shape.projectile = Projectile()
+            shape.width = 2.5
+            shape.measures = nil
+        }
+        let id = shape.id
+        editPage("Add Shape") { $0.shapes.append(shape) }
+        selectShape(id)
+    }
+
+    @objc private func shapeTapped(_ gesture: UITapGestureRecognizer) {
+        if let hit = shape(at: gesture.location(in: overlay)) {
+            selectShape(hit.id)
+        } else {
+            deselectShape()
+        }
+    }
+
+    private func selectShape(_ id: UUID) {
+        guard let shape = page?.shapes.first(where: { $0.id == id }) else { return }
+        if selectedShape == id, inspector != nil { return }
+        deselectShape()
+        selectedShape = id
+        let editor = ShapeEditor(shape: shape)
+        editor.onCommit = { [weak self] in self?.commitShape($0) }
+        editor.onDelete = { [weak self] in
+            self?.inspector?.dismiss(animated: true)
+            self?.editPage("Delete Shape") { page in page.shapes.removeAll { $0.id == id } }
+            self?.deselectShape()
+        }
+        self.editor = editor
+        shapesView.selected = id
+        rebuildOverlay()
+        presentInspector(for: shape, editor: editor)
+    }
+
+    private func deselectShape() {
+        guard selectedShape != nil else { return }
+        selectedShape = nil
+        editor = nil
+        shapesView.selected = nil
+        handleViews.forEach { $0.removeFromSuperview() }
+        handleViews = []
+        if let inspector, inspector.presentingViewController != nil {
+            inspector.dismiss(animated: true)
+        }
+    }
+
+    private func presentInspector(for shape: ShapeItem, editor: ShapeEditor) {
+        guard let presenter = viewController, presenter.presentedViewController == nil else { return }
+        let host = UIHostingController(rootView: ShapeInspector(editor: editor))
+        host.modalPresentationStyle = .popover
+        host.preferredContentSize = CGSize(width: 340, height: shape.kind == .projectile ? 620 : 470)
+        if let pop = host.popoverPresentationController {
+            pop.sourceView = self
+            pop.sourceRect = overlay.convert(shape.bounds, to: self).intersection(bounds.insetBy(dx: 20, dy: 20))
+            pop.permittedArrowDirections = [.left, .right, .up, .down]
+            // the page stays live so handles can be dragged with the panel open
+            pop.passthroughViews = [self]
+            pop.delegate = self
+        }
+        presenter.present(host, animated: true)
+        inspector = host
+    }
+
+    func adaptivePresentationStyle(for controller: UIPresentationController, traitCollection: UITraitCollection) -> UIModalPresentationStyle {
+        .none
+    }
+
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        deselectShape()
+    }
+
+    private func commitShape(_ shape: ShapeItem) {
+        shapesView.preview = nil
+        editPage("Edit Shape") { page in
+            if let i = page.shapes.firstIndex(where: { $0.id == shape.id }) { page.shapes[i] = shape }
+        }
+    }
+
+    /// Round grab handles on the selected shape, kept the same size on screen at any zoom.
+    private func layoutHandles() {
+        guard let editor, selectedShape != nil else { return }
+        let points = editor.shape.handles
+        if handleViews.count != points.count {
+            handleViews.forEach { $0.removeFromSuperview() }
+            handleViews = points.indices.map { i in
+                let handle = UIView()
+                handle.backgroundColor = .white
+                handle.layer.borderColor = Theme.uiAccent.cgColor
+                handle.tag = i
+                handle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handleDragged(_:))))
+                overlay.addSubview(handle)
+                return handle
+            }
+        }
+        let size = 26 / max(canvas.zoomScale, 0.1)
+        for (handle, p) in zip(handleViews, points) {
+            handle.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            handle.center = p
+            handle.layer.cornerRadius = size / 2
+            handle.layer.borderWidth = 3 / max(canvas.zoomScale, 0.1)
+        }
+    }
+
+    @objc private func handleDragged(_ gesture: UIPanGestureRecognizer) {
+        guard let editor, let index = gesture.view?.tag else { return }
+        let point = gesture.location(in: overlay)
+        switch gesture.state {
+        case .began:
+            shapeDrag = (point, editor.shape)
+        case .changed:
+            guard let base = shapeDrag?.base else { return }
+            editor.shape = base.moving(handle: index, to: point)
+            shapesView.preview = editor.shape
+            layoutHandles()
+        default:
+            shapeDrag = nil
+            commitShape(editor.shape)
+        }
+    }
+
+    @objc private func shapeMoved(_ gesture: UIPanGestureRecognizer) {
+        guard let editor else { return }
+        let point = gesture.location(in: overlay)
+        switch gesture.state {
+        case .began:
+            shapeDrag = (point, editor.shape)
+        case .changed:
+            guard let drag = shapeDrag else { return }
+            editor.shape = drag.base.translated(by: CGSize(width: point.x - drag.start.x, height: point.y - drag.start.y))
+            shapesView.preview = editor.shape
+            layoutHandles()
+        default:
+            shapeDrag = nil
+            commitShape(editor.shape)
+        }
     }
 
     // Box selection: handwriting to text, or linking
@@ -730,6 +1059,15 @@ final class PassthroughView: UIView {
             return nil
         }
         return hit
+    }
+}
+
+/// Gesture delegate driven by a closure.
+final class GestureGate: NSObject, UIGestureRecognizerDelegate {
+    var shouldBegin: (UIGestureRecognizer) -> Bool = { _ in true }
+
+    func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        shouldBegin(gesture)
     }
 }
 

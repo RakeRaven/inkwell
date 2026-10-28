@@ -12,6 +12,10 @@ final class InkController: NSObject, PKCanvasViewDelegate {
     /// Whether a scribble over this area would erase non-ink content (e.g. text boxes).
     var extrasHit: ((CGRect) -> Bool)?
     var eraseExtras: ((CGRect) -> Void)?
+    /// Takes over a snapped shape as an editable vector shape; returns false to keep it as ink.
+    var onShapeBegin: ((ShapeOutline, PKTool) -> Bool)?
+    var onShapeChange: ((ShapeOutline) -> Void)?
+    var onShapeEnd: (() -> Void)?
     /// False keeps fingers for scrolling whatever the settings say (PDF pages).
     var fingerAllowed = true {
         didSet { applyTools() }
@@ -37,6 +41,8 @@ final class InkController: NSObject, PKCanvasViewDelegate {
         var template: PKStroke?
         var tool: PKTool
         var anchor: CGPoint
+        /// Handed to `onShapeBegin` rather than drawn as a stroke.
+        var vector: Bool
     }
 
     override init() {
@@ -213,6 +219,7 @@ final class InkController: NSObject, PKCanvasViewDelegate {
     private func pencilLifted() {
         tracing = false
         holdWork?.cancel()
+        if live?.vector == true { onShapeEnd?() }
         live = nil
     }
 
@@ -242,17 +249,27 @@ final class InkController: NSObject, PKCanvasViewDelegate {
             template = canvas.drawing.strokes.last
             dropPencilKitStep(leaving: base.count)
         }
-        guard let shape = ShapeRecognizer.stroke(outline, like: template, tool: tool) else { return }
-        commit(PKDrawing(strokes: base + [shape]), name: "Shape")
-        snapCount = base.count + 1
-        live = LiveShape(base: base, outline: outline, template: template, tool: tool, anchor: trace.last ?? .zero)
+        let anchor = trace.last ?? .zero
+        if onShapeBegin?(outline, tool) == true {
+            snapCount = base.count
+            live = LiveShape(base: base, outline: outline, template: template, tool: tool, anchor: anchor, vector: true)
+        } else {
+            guard let shape = ShapeRecognizer.stroke(outline, like: template, tool: tool) else { return }
+            commit(PKDrawing(strokes: base + [shape]), name: "Shape")
+            snapCount = base.count + 1
+            live = LiveShape(base: base, outline: outline, template: template, tool: tool, anchor: anchor, vector: false)
+        }
         // a tick on Pencil Pro so you feel the snap
         UICanvasFeedbackGenerator(view: canvas).alignmentOccurred(at: lastMove ?? .zero)
     }
 
     private func reshape(to point: CGPoint) {
-        guard let live,
-              let shape = ShapeRecognizer.stroke(live.outline.adjusted(from: live.anchor, to: point), like: live.template, tool: live.tool) else { return }
+        guard let live else { return }
+        if live.vector {
+            onShapeChange?(live.outline.adjusted(from: live.anchor, to: point))
+            return
+        }
+        guard let shape = ShapeRecognizer.stroke(live.outline.adjusted(from: live.anchor, to: point), like: live.template, tool: live.tool) else { return }
         // the snap's undo step restores the drawing from before the shape, so tweaks need no steps of their own
         let drawing = PKDrawing(strokes: live.base + [shape])
         load(drawing)

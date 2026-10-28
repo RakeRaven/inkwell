@@ -5,6 +5,9 @@ struct ShapeOutline {
     var points: [CGPoint]
     /// Straight edges with hard corners, as opposed to a smooth curve.
     var sharp: Bool
+    var closed = false
+    /// Exact geometry when this is an ellipse; `points` holds it sampled.
+    var ellipse: (center: CGPoint, radii: CGSize, angle: CGFloat)?
 
     var isLine: Bool { points.count == 2 }
 
@@ -18,7 +21,13 @@ struct ShapeOutline {
         let before = hypot(anchor.x - c.x, anchor.y - c.y)
         guard before > 1 else { return self }
         let scale = hypot(point.x - c.x, point.y - c.y) / before
-        return ShapeOutline(points: points.map { CGPoint(x: c.x + ($0.x - c.x) * scale, y: c.y + ($0.y - c.y) * scale) }, sharp: sharp)
+        var out = self
+        out.points = points.map { CGPoint(x: c.x + ($0.x - c.x) * scale, y: c.y + ($0.y - c.y) * scale) }
+        if let e = ellipse {
+            out.ellipse = (CGPoint(x: c.x + (e.center.x - c.x) * scale, y: c.y + (e.center.y - c.y) * scale),
+                           CGSize(width: e.radii.width * scale, height: e.radii.height * scale), e.angle)
+        }
+        return out
     }
 }
 
@@ -48,33 +57,22 @@ enum ShapeRecognizer {
 
     static func outline(for raw: [CGPoint]) -> ShapeOutline? {
         guard raw.count > 4 else { return nil }
-        let points = resample(raw, count: 96)
+        var points = resample(raw, count: 96)
         let bounds = boundingBox(points)
         let size = max(bounds.width, bounds.height)
-        guard size > 12, let first = points.first, let last = points.last else { return nil }
+        guard size > 12, let first = points.first else { return nil }
+
+        // hand-drawn loops overshoot or fall short of the start; find where it comes back round
+        let tail = Int(Double(points.count) * 0.6)..<points.count
+        let back = tail.min { distance(points[$0], first) < distance(points[$1], first) } ?? points.count - 1
+        if distance(points[back], first) < size * 0.3 {
+            points = Array(points[...back])
+            return closedOutline(resample(points, count: 96), size: size)
+        }
+
+        guard let last = points.last else { return nil }
         let length = pathLength(points)
         let gap = distance(first, last)
-
-        if gap < size * 0.25 {
-            let frame = tightestFrame(points)
-            let ellipseError = ellipseFit(points, in: frame)
-            let boxError = boxFit(points, in: frame)
-            let corners = removeFlat(simplifyClosed(points, epsilon: size * 0.06), closed: true, minEdge: size * 0.1)
-            if ellipseError < 0.08, ellipseError < boxError {
-                return ShapeOutline(points: ellipse(in: frame, startingAt: first), sharp: false)
-            }
-            // a box hugging the stroke beats a lumpy four-corner trace, so wonky squares come out square
-            if boxError < 0.06 || (corners.count == 4 && boxError < 0.12) {
-                let box = frame.corners
-                return ShapeOutline(points: box + [box[0]], sharp: true)
-            }
-            switch corners.count {
-            case 3...8:
-                return ShapeOutline(points: corners + [corners[0]], sharp: true)
-            default:
-                return ellipseError < 0.15 ? ShapeOutline(points: ellipse(in: frame, startingAt: first), sharp: false) : nil
-            }
-        }
 
         if gap / max(length, 1) > 0.92 {
             return ShapeOutline(points: [first, snapped(last, from: first)], sharp: true)
@@ -82,6 +80,54 @@ enum ShapeRecognizer {
         let corners = removeFlat(rdp(points, epsilon: size * 0.06), closed: false, minEdge: size * 0.08)
         guard (3...5).contains(corners.count) else { return nil }
         return ShapeOutline(points: corners, sharp: true)
+    }
+
+    private static func closedOutline(_ points: [CGPoint], size: CGFloat) -> ShapeOutline? {
+        guard let first = points.first else { return nil }
+        let frame = tightestFrame(points)
+        let ellipseError = ellipseFit(points, in: frame)
+        let boxError = boxFit(points, in: frame)
+        // a round loop turns gently everywhere; corners turn hard in one spot
+        if sharpestTurn(points) < 55 || (ellipseError < 0.08 && ellipseError < boxError) {
+            return ellipseOutline(frame, startingAt: first)
+        }
+        let corners = removeFlat(simplifyClosed(points, epsilon: size * 0.06), closed: true, minEdge: size * 0.1)
+        // a box hugging the stroke beats a lumpy four-corner trace, so wonky squares come out square
+        if boxError < 0.06 || (corners.count == 4 && boxError < 0.12) {
+            let box = frame.corners
+            return ShapeOutline(points: box + [box[0]], sharp: true, closed: true)
+        }
+        switch corners.count {
+        case 3...8:
+            return ShapeOutline(points: corners + [corners[0]], sharp: true, closed: true)
+        default:
+            return ellipseError < 0.18 ? ellipseOutline(frame, startingAt: first) : nil
+        }
+    }
+
+    private static func ellipseOutline(_ frame: Frame, startingAt start: CGPoint) -> ShapeOutline {
+        var rx = frame.width / 2, ry = frame.height / 2
+        var angle = frame.angle
+        if rx / max(ry, 1) > 0.85, rx / max(ry, 1) < 1.18 {
+            rx = (rx + ry) / 2
+            ry = rx
+            angle = 0
+        }
+        return ShapeOutline(points: ellipse(in: frame, startingAt: start), sharp: false, closed: true,
+                            ellipse: (frame.center, CGSize(width: rx, height: ry), angle))
+    }
+
+    /// Biggest change of direction over a short stretch of the loop, in degrees.
+    private static func sharpestTurn(_ points: [CGPoint]) -> CGFloat {
+        let n = points.count
+        guard n > 12 else { return 180 }
+        let k = 4
+        var worst: CGFloat = 0
+        for i in 0..<n {
+            let a = points[(i - k + n) % n], b = points[i], c = points[(i + k) % n]
+            worst = max(worst, 180 - angle(a, b, c))
+        }
+        return worst
     }
 
     // Fitting
@@ -133,7 +179,7 @@ enum ShapeRecognizer {
     private static func ellipse(in frame: Frame, startingAt start: CGPoint) -> [CGPoint] {
         var rx = frame.width / 2, ry = frame.height / 2
         var frame = frame
-        if rx / max(ry, 1) > 0.88, rx / max(ry, 1) < 1.14 {
+        if rx / max(ry, 1) > 0.85, rx / max(ry, 1) < 1.18 {
             rx = (rx + ry) / 2
             ry = rx
             frame.angle = 0

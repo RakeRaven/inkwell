@@ -250,6 +250,38 @@ struct ImageBox: Codable, Identifiable, Equatable {
     var frame: CGRect
 }
 
+enum ShapeKind: String, Codable {
+    case polygon, polyline, line, ellipse, projectile
+}
+
+/// Launch settings for a projectile, in metres, seconds and degrees.
+struct Projectile: Codable, Equatable {
+    var speed = 20.0
+    var angle = 45.0
+    var gravity = 9.81
+    /// Launch height above the ground line.
+    var height = 0.0
+    /// Page points per metre.
+    var scale = 12.0
+}
+
+/// An editable vector shape: snapped from ink, or inserted from the menu.
+struct ShapeItem: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var kind: ShapeKind
+    /// Vertices; a line's two ends; an ellipse's centre; a projectile's launch point.
+    var points: [CGPoint]
+    var radii: CGSize?
+    /// Radians, for ellipses.
+    var rotation: Double?
+    var color = "1C1C1E"
+    var width: CGFloat = 3
+    var opacity: Double?
+    /// Show side lengths and angles.
+    var measures: Bool?
+    var projectile: Projectile?
+}
+
 /// A page of an inserted PDF shown as the paper.
 struct PageBackground: Codable, Equatable {
     /// File in the notebook's attachments folder.
@@ -262,6 +294,7 @@ struct NotePage: Codable, Identifiable, Equatable {
     var links: [NoteLink] = []
     var textBoxes: [TextBox] = []
     var images: [ImageBox] = []
+    var shapes: [ShapeItem] = []
     /// Overrides the notebook's paper for this page.
     var paper: PaperStyle?
     var paperColor: PaperColor?
@@ -277,6 +310,7 @@ extension NotePage {
         links = try c.decodeIfPresent([NoteLink].self, forKey: .links) ?? []
         textBoxes = try c.decodeIfPresent([TextBox].self, forKey: .textBoxes) ?? []
         images = try c.decodeIfPresent([ImageBox].self, forKey: .images) ?? []
+        shapes = try c.decodeIfPresent([ShapeItem].self, forKey: .shapes) ?? []
         paper = try c.decodeIfPresent(PaperStyle.self, forKey: .paper)
         paperColor = try c.decodeIfPresent(PaperColor.self, forKey: .paperColor)
         size = try c.decodeIfPresent(CGSize.self, forKey: .size)
