@@ -1296,7 +1296,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
 }
 
 /// Only its subviews take touches; everything else falls through to the canvas.
-final class PassthroughView: UIView {
+class PassthroughView: UIView {
     /// Views with this tag let the pencil through so you can keep writing over them.
     static let pencilThroughTag = 7701
 
