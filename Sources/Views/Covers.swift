@@ -415,7 +415,9 @@ struct CoverPicker: View {
         let count = Double(draft.cover?.stickers?.count ?? 0)
         sticker.x = 0.5 + (count.truncatingRemainder(dividingBy: 3) - 1) * 0.12
         sticker.y = 0.55 + (count.truncatingRemainder(dividingBy: 2)) * 0.1
-        draft.cover?.stickers = (draft.cover?.stickers ?? []) + [sticker]
+        // read first: writing draft.cover while reading it in the same line traps
+        let stickers = (draft.cover?.stickers ?? []) + [sticker]
+        draft.cover?.stickers = stickers
         selected = .sticker(sticker.id)
     }
 
