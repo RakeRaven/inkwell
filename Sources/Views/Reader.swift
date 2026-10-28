@@ -62,10 +62,19 @@ struct Backlink: Identifiable {
 struct ReaderPane: View {
     let model: ReaderModel
     let annotating: Bool
+    let bookMode: Bool
 
     var body: some View {
         if let pdf = model.pdf {
-            PDFReader(document: pdf, annotations: model.annotations, annotating: annotating, state: model.state)
+            if bookMode {
+                PageCurlPager(count: pdf.pageCount, index: Binding(get: { model.state.pageIndex }, set: { model.state.pageIndex = $0 }), makePage: { i in
+                    PDFBookPage(page: pdf.page(at: i) ?? PDFPage(), annotations: model.annotations, key: String(i))
+                }, refresh: { view, _ in
+                    (view as? PDFBookPage)?.annotating = annotating
+                })
+            } else {
+                PDFReader(document: pdf, annotations: model.annotations, annotating: annotating, state: model.state)
+            }
         } else if let book = model.epub {
             EPUBReader(book: book, state: model.state)
         } else {
@@ -105,7 +114,10 @@ struct ReaderControls: View {
             if !model.chapters.isEmpty {
                 Menu {
                     ForEach(Array(model.chapters.enumerated()), id: \.offset) { _, chapter in
-                        Button(chapter.title) { model.state.jump = PageJump(page: chapter.page) }
+                        Button(chapter.title) {
+                            model.state.pageIndex = chapter.page
+                            model.state.jump = PageJump(page: chapter.page)
+                        }
                     }
                 } label: {
                     BarIcon("list.bullet")
@@ -169,6 +181,10 @@ struct PDFReader: UIViewRepresentable {
         view.pageOverlayViewProvider = context.coordinator
         view.document = document
         context.coordinator.attach(view)
+        // coming back from book mode or a hidden pane: return to the page we were on
+        if state.pageIndex > 0, let page = document.page(at: state.pageIndex) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { view.go(to: page) }
+        }
         return view
     }
 

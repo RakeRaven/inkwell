@@ -97,7 +97,7 @@ final class Library {
     }
 
     /// `photo` and `ink` are new edits; without them the cover keeps its existing files.
-    func setCover(_ id: UUID, to cover: Cover?, photo: UIImage? = nil, ink: PKDrawing? = nil) {
+    func setCover(_ id: UUID, to cover: Cover?, photo: UIImage? = nil, ink: PKDrawing? = nil, stickers: [UUID: UIImage] = [:]) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
         var cover = cover
         let dir = folder(for: items[i])
@@ -115,8 +115,17 @@ final class Library {
                 cover?.ink = inkID
             }
         }
+        for sticker in cover?.stickers ?? [] where sticker.emoji == nil {
+            let file = dir.appending(path: "cover-sticker-\(sticker.id.uuidString).png")
+            if !FileManager.default.fileExists(atPath: file.path), let data = stickers[sticker.id]?.downscaled(maxSide: 800).pngData() {
+                try? data.write(to: file, options: .atomic)
+            }
+        }
         // drop cover files the cover no longer uses
-        let keep = Set([cover?.photo.map { "cover-\($0.uuidString).jpg" }, cover?.ink.map { "cover-ink-\($0.uuidString).drawing" }].compactMap { $0 })
+        var keep = Set([cover?.photo.map { "cover-\($0.uuidString).jpg" }, cover?.ink.map { "cover-ink-\($0.uuidString).drawing" }].compactMap { $0 })
+        for sticker in cover?.stickers ?? [] where sticker.emoji == nil {
+            keep.insert("cover-sticker-\(sticker.id.uuidString).png")
+        }
         let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         for file in files where file.hasPrefix("cover-") && !keep.contains(file) {
             try? FileManager.default.removeItem(at: dir.appending(path: file))
@@ -128,6 +137,14 @@ final class Library {
     func coverPhoto(for item: LibraryItem) -> UIImage? {
         guard let id = item.cover?.photo else { return nil }
         return UIImage(contentsOfFile: folder(for: item).appending(path: "cover-\(id.uuidString).jpg").path)
+    }
+
+    func coverStickers(for item: LibraryItem) -> [UUID: UIImage] {
+        var images: [UUID: UIImage] = [:]
+        for sticker in item.cover?.stickers ?? [] where sticker.emoji == nil {
+            images[sticker.id] = UIImage(contentsOfFile: folder(for: item).appending(path: "cover-sticker-\(sticker.id.uuidString).png").path)
+        }
+        return images
     }
 
     func coverInk(for item: LibraryItem) -> PKDrawing? {

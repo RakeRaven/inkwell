@@ -9,6 +9,7 @@ struct CoverView: View {
     let title: String
     var photo: UIImage?
     var ink: UIImage?
+    var stickerImages: [UUID: UIImage] = [:]
 
     var body: some View {
         GeometryReader { geo in
@@ -24,16 +25,22 @@ struct CoverView: View {
                         .scaleEffect(cover.zoom ?? 1)
                         .offset(x: (cover.offsetX ?? 0) * size.width, y: (cover.offsetY ?? 0) * size.height)
                     if cover.patternOverPhoto == true {
-                        CoverPatternView(pattern: cover.pattern)
+                        CoverPatternView(pattern: cover.pattern, color: cover.patternColor)
                     }
                 } else {
-                    CoverPatternView(pattern: cover.pattern)
+                    CoverPatternView(pattern: cover.pattern, color: cover.patternColor)
                 }
                 LinearGradient(colors: [.black.opacity(0.28), .clear], startPoint: .leading, endPoint: .trailing)
                     .frame(width: 14 * s)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if cover.mode == .typed {
                     titleLabel(in: size, scale: s)
+                }
+                ForEach(cover.stickers ?? []) { sticker in
+                    stickerView(sticker, scale: s)
+                        .scaleEffect(CGFloat(sticker.scale))
+                        .rotationEffect(.radians(sticker.rotation))
+                        .position(x: CGFloat(sticker.x) * size.width, y: CGFloat(sticker.y) * size.height)
                 }
                 if let ink {
                     Image(uiImage: ink).resizable()
@@ -47,19 +54,38 @@ struct CoverView: View {
     private func titleLabel(in size: CGSize, scale s: CGFloat) -> some View {
         let center = cover.titleCenter
         let style = cover.titleStyle ?? .label
-        let left = center.x < 0.36, right = center.x > 0.64
         return Text(title)
             .font(font(size: 13 * s))
             .foregroundStyle(style == .light ? Color.white : Color.black.opacity(0.85))
             .shadow(color: style == .light ? .black.opacity(0.5) : .clear, radius: 2 * s)
             .lineLimit(3)
-            .multilineTextAlignment(left ? .leading : right ? .trailing : .center)
+            .multilineTextAlignment(.center)
             .padding(.horizontal, 10 * s)
             .padding(.vertical, 6 * s)
             .background(style == .label ? Color.white.opacity(0.92) : .clear, in: RoundedRectangle(cornerRadius: 4 * s))
-            .frame(width: size.width - 36 * s, alignment: left ? .leading : right ? .trailing : .center)
-            .position(x: size.width / 2, y: min(max(center.y, 0.06), 0.94) * size.height)
+            .frame(maxWidth: size.width * 0.82)
+            .scaleEffect(CGFloat(cover.titleScale ?? 1))
+            .rotationEffect(.radians(cover.titleRotation ?? 0))
+            .position(x: center.x * size.width, y: center.y * size.height)
     }
+
+    @ViewBuilder
+    private func stickerView(_ sticker: CoverSticker, scale s: CGFloat) -> some View {
+        if let emoji = sticker.emoji {
+            Text(emoji)
+                .font(.system(size: Self.emojiSize * s))
+                .fixedSize()
+        } else if let image = stickerImages[sticker.id] {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: Self.pictureSize * s, height: Self.pictureSize * s)
+        }
+    }
+
+    /// Sticker sizes at the 160pt design width, before their own scale.
+    static let emojiSize: CGFloat = 26
+    static let pictureSize: CGFloat = 54
 
     private func font(size: CGFloat) -> Font {
         switch cover.titleFont ?? .system {
@@ -81,16 +107,20 @@ struct CoverView: View {
 
 struct CoverPatternView: View {
     let pattern: CoverPattern
+    /// Hex; white when nil.
+    var color: String?
 
     var body: some View {
         Canvas { ctx, size in
-            let ink = GraphicsContext.Shading.color(.white.opacity(0.14))
+            let base = color.map { Color(hex: $0) } ?? .white
+            let ink = GraphicsContext.Shading.color(base.opacity(color == nil ? 0.14 : 0.45))
             switch pattern {
             case .plain:
                 break
             case .spine:
                 let band = size.width * 0.2
-                ctx.fill(Path(CGRect(x: 0, y: 0, width: band, height: size.height)), with: .color(.black.opacity(0.2)))
+                let fill: Color = color == nil ? .black.opacity(0.2) : base.opacity(0.85)
+                ctx.fill(Path(CGRect(x: 0, y: 0, width: band, height: size.height)), with: .color(fill))
                 var stitch = Path()
                 stitch.move(to: CGPoint(x: band + 4, y: 0))
                 stitch.addLine(to: CGPoint(x: band + 4, y: size.height))
@@ -125,7 +155,8 @@ struct CoverPatternView: View {
         }
     }
 }
-/// Unsaved cover edits. Photo and ink only get written when they changed.
+
+/// Unsaved cover edits. Photo, ink and picture stickers only get written when they changed.
 @Observable
 final class CoverDraft {
     var cover: Cover?
@@ -133,6 +164,7 @@ final class CoverDraft {
     var photoChanged = false
     var ink = PKDrawing()
     var inkChanged = false
+    var stickerImages: [UUID: UIImage] = [:]
 
     init(cover: Cover?) {
         self.cover = cover
@@ -141,10 +173,11 @@ final class CoverDraft {
     func load(from library: Library, item: LibraryItem) {
         photo = library.coverPhoto(for: item)
         ink = library.coverInk(for: item) ?? PKDrawing()
+        stickerImages = library.coverStickers(for: item)
     }
 
     func save(to library: Library, id: UUID) {
-        library.setCover(id, to: cover, photo: photoChanged ? photo : nil, ink: inkChanged ? ink : nil)
+        library.setCover(id, to: cover, photo: photoChanged ? photo : nil, ink: inkChanged ? ink : nil, stickers: stickerImages)
     }
 }
 
@@ -153,17 +186,29 @@ struct CoverPicker: View {
     let title: String
     @Binding var drawing: Bool
 
-    private enum Drag { case title, photo, ignored }
+    private enum Target: Equatable {
+        case title, sticker(UUID), photo
+    }
+
+    /// Where the touched thing started: centre, scale and rotation.
+    private struct Start {
+        var x: Double, y: Double, scale: Double, rotation: Double
+    }
 
     @State private var pick: PhotosPickerItem?
-    @State private var drag: Drag?
-    @State private var dragBase = CGPoint.zero
-    @State private var zoomBase: Double?
+    @State private var stickerPick: PhotosPickerItem?
+    @State private var lifting = false
+    @State private var customSticker = ""
+    @State private var target: Target?
+    @State private var selected: Target?
+    @State private var start = Start(x: 0, y: 0, scale: 1, rotation: 0)
     @State private var guideX: Double?
     @State private var guideY: Double?
     @State private var inkBefore: (ink: PKDrawing, changed: Bool)?
 
     private var canvas: CGSize { Cover.canvasSize }
+    private static let quickStickers = ["\u{2728}", "\u{1F496}", "\u{1F338}", "\u{2B50}", "\u{1F98B}", "\u{1F319}", "\u{1F525}", "\u{1F353}",
+                                        "\u{1F4DA}", "\u{1F380}", "\u{1F308}", "\u{1F431}", "\u{1F3A7}", "\u{2615}", "\u{1F9E0}", "\u{1F4AB}"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -182,12 +227,13 @@ struct CoverPicker: View {
                 HStack(alignment: .top, spacing: 28) {
                     VStack(spacing: 14) {
                         preview(current)
-                        writingControls
+                        previewControls(current)
                     }
                     VStack(alignment: .leading, spacing: 20) {
                         colorControls(current)
-                        photoControls(current)
+                        photoControls
                         titleControls(current)
+                        stickerControls
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -204,30 +250,43 @@ struct CoverPicker: View {
                 pick = nil
             }
         }
+        .onChange(of: stickerPick) { _, item in
+            guard let item else { return }
+            lifting = true
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
+                    SubjectLifter.lift(image) { cut in
+                        let sticker = CoverSticker(emoji: nil)
+                        draft.stickerImages[sticker.id] = cut
+                        add(sticker)
+                        lifting = false
+                    }
+                } else {
+                    lifting = false
+                }
+                stickerPick = nil
+            }
+        }
     }
 
     private func preview(_ current: Cover) -> some View {
         ZStack {
-            CoverView(cover: current, title: title.isEmpty ? "Untitled" : title, photo: draft.photo)
+            CoverView(cover: current, title: title.isEmpty ? "Untitled" : title, photo: draft.photo, stickerImages: draft.stickerImages)
             CoverInkCanvas(drawing: $draft.ink, active: drawing) { draft.inkChanged = true }
-            if drag == .title { guides }
+            if !drawing {
+                overlay(current)
+                StickerGestures(onBegin: { begin(at: $0, current) }, onChange: change, onEnd: end, onTap: { selected = hit($0, current) })
+            }
         }
         .frame(width: canvas.width, height: canvas.height)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(drawing ? Theme.accent : Theme.line, lineWidth: drawing ? 2.5 : 1))
         .shadow(color: .black.opacity(0.18), radius: 10, y: 5)
-        .contentShape(Rectangle())
-        .gesture(dragGesture(current).simultaneously(with: pinchGesture), including: drawing ? .none : .all)
     }
 
-    /// Snap points, plus the lines the title is snapped to.
-    private var guides: some View {
+    /// Snap guides while moving, and a dashed ring round the selected item.
+    private func overlay(_ current: Cover) -> some View {
         Canvas { ctx, size in
-            for x in Cover.titleColumns {
-                for y in Cover.titleRows {
-                    ctx.fill(Path(ellipseIn: CGRect(x: x * size.width - 3, y: y * size.height - 3, width: 6, height: 6)), with: .color(.white.opacity(0.8)))
-                }
-            }
             var lines = Path()
             if let guideX {
                 lines.move(to: CGPoint(x: guideX * size.width, y: 0))
@@ -238,61 +297,111 @@ struct CoverPicker: View {
                 lines.addLine(to: CGPoint(x: size.width, y: guideY * size.height))
             }
             ctx.stroke(lines, with: .color(Theme.accent), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+            if let selected, let ring = frame(of: selected, current) {
+                let rect = CGRect(x: ring.center.x - ring.radius, y: ring.center.y - ring.radius, width: ring.radius * 2, height: ring.radius * 2)
+                ctx.stroke(Path(ellipseIn: rect), with: .color(.white.opacity(0.9)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
         }
         .allowsHitTesting(false)
     }
 
-    /// Drags the title when it starts on it (snapping to the grid), otherwise pans the photo.
-    private func dragGesture(_ current: Cover) -> some Gesture {
-        DragGesture(minimumDistance: 1)
-            .onChanged { value in
-                if drag == nil {
-                    let center = current.titleCenter
-                    if current.mode == .typed, abs(value.startLocation.y - center.y * canvas.height) < 30 {
-                        drag = .title
-                        dragBase = center
-                    } else if draft.photo != nil {
-                        drag = .photo
-                        dragBase = CGPoint(x: current.offsetX ?? 0, y: current.offsetY ?? 0)
-                    } else {
-                        drag = .ignored
-                    }
-                }
-                let x = Double(dragBase.x + value.translation.width / canvas.width)
-                let y = Double(dragBase.y + value.translation.height / canvas.height)
-                switch drag {
-                case .title:
-                    let column = Cover.titleColumns.min { abs($0 - x) < abs($1 - x) } ?? 0.5
-                    var row = min(max(y, 0.06), 0.94)
-                    let nearest = Cover.titleRows.min { abs($0 - row) < abs($1 - row) } ?? 0.5
-                    guideY = abs(nearest - row) < 0.05 ? nearest : nil
-                    if let guideY { row = guideY }
-                    guideX = column
-                    draft.cover?.titleX = column
-                    draft.cover?.titleY = row
-                case .photo:
-                    draft.cover?.offsetX = min(max(x, -1), 1)
-                    draft.cover?.offsetY = min(max(y, -1), 1)
-                default:
-                    break
-                }
-            }
-            .onEnded { _ in
-                drag = nil
-                guideX = nil
-                guideY = nil
-            }
+    // Gestures
+
+    /// Rough touch area of an item, in preview points.
+    private func frame(of target: Target, _ current: Cover) -> (center: CGPoint, radius: CGFloat)? {
+        let s = canvas.width / 160
+        switch target {
+        case .title:
+            guard current.mode == .typed else { return nil }
+            let c = current.titleCenter
+            let width = min(canvas.width * 0.41, CGFloat(max(title.count, 7)) * 3.6 * s + 10 * s)
+            return (CGPoint(x: c.x * canvas.width, y: c.y * canvas.height), width * CGFloat(current.titleScale ?? 1))
+        case .sticker(let id):
+            guard let sticker = current.stickers?.first(where: { $0.id == id }) else { return nil }
+            let base = sticker.emoji == nil ? CoverView.pictureSize : CoverView.emojiSize
+            return (CGPoint(x: CGFloat(sticker.x) * canvas.width, y: CGFloat(sticker.y) * canvas.height), base * s * 0.62 * CGFloat(sticker.scale))
+        case .photo:
+            return nil
+        }
     }
 
-    private var pinchGesture: some Gesture {
-        MagnifyGesture()
-            .onChanged { value in
-                guard draft.photo != nil else { return }
-                let base = zoomBase ?? draft.cover?.zoom ?? 1
-                zoomBase = base
-                draft.cover?.zoom = min(max(base * Double(value.magnification), 1), 5)
+    /// Topmost sticker, then the title.
+    private func hit(_ point: CGPoint, _ current: Cover) -> Target? {
+        let candidates = (current.stickers ?? []).reversed().map { Target.sticker($0.id) } + [.title]
+        return candidates.first { candidate in
+            guard let f = frame(of: candidate, current) else { return false }
+            if candidate == .title {
+                // the title is wide and short
+                let rotation = CGFloat(current.titleRotation ?? 0)
+                let dx = point.x - f.center.x, dy = point.y - f.center.y
+                let lx = dx * cos(rotation) + dy * sin(rotation), ly = -dx * sin(rotation) + dy * cos(rotation)
+                return abs(lx) < f.radius + 10 && abs(ly) < 22 * CGFloat(current.titleScale ?? 1) + 10
             }
-            .onEnded { _ in zoomBase = nil }
+            return hypot(point.x - f.center.x, point.y - f.center.y) < f.radius + 12
+        }
+    }
+
+    private func begin(at point: CGPoint, _ current: Cover) {
+        target = hit(point, current) ?? (draft.photo != nil ? .photo : nil)
+        switch target {
+        case .title:
+            let c = current.titleCenter
+            start = Start(x: Double(c.x), y: Double(c.y), scale: current.titleScale ?? 1, rotation: current.titleRotation ?? 0)
+            selected = .title
+        case .sticker(let id):
+            if let sticker = current.stickers?.first(where: { $0.id == id }) {
+                start = Start(x: sticker.x, y: sticker.y, scale: sticker.scale, rotation: sticker.rotation)
+            }
+            selected = target
+        case .photo:
+            start = Start(x: current.offsetX ?? 0, y: current.offsetY ?? 0, scale: current.zoom ?? 1, rotation: 0)
+        case nil:
+            break
+        }
+    }
+
+    private func change(_ translation: CGSize, _ scale: CGFloat, _ rotation: CGFloat) {
+        guard let target else { return }
+        let x = start.x + Double(translation.width / canvas.width)
+        let y = start.y + Double(translation.height / canvas.height)
+        if target == .photo {
+            draft.cover?.offsetX = min(max(x, -1), 1)
+            draft.cover?.offsetY = min(max(y, -1), 1)
+            draft.cover?.zoom = min(max(start.scale * Double(scale), 1), 5)
+            return
+        }
+        // snap the centre to the middle line and the title rows, and near-level to level
+        let rows = target == .title ? Cover.titleRows : [0.5]
+        let nearRow = rows.min { abs($0 - y) < abs($1 - y) } ?? 0.5
+        guideX = abs(x - 0.5) < 0.025 ? 0.5 : nil
+        guideY = abs(nearRow - y) < 0.025 ? nearRow : nil
+        let cx = min(max(guideX ?? x, 0.02), 0.98)
+        let cy = min(max(guideY ?? y, 0.02), 0.98)
+        let s = min(max(start.scale * Double(scale), 0.3), 5)
+        var r = start.rotation + Double(rotation)
+        let turns = (r / (.pi / 2)).rounded() * (.pi / 2)
+        if abs(r - turns) < 0.07 { r = turns }
+        switch target {
+        case .title:
+            draft.cover?.titleX = cx
+            draft.cover?.titleY = cy
+            draft.cover?.titleScale = s
+            draft.cover?.titleRotation = r
+        case .sticker(let id):
+            guard let i = draft.cover?.stickers?.firstIndex(where: { $0.id == id }) else { return }
+            draft.cover?.stickers?[i].x = cx
+            draft.cover?.stickers?[i].y = cy
+            draft.cover?.stickers?[i].scale = s
+            draft.cover?.stickers?[i].rotation = r
+        case .photo:
+            break
+        }
+    }
+
+    private func end() {
+        target = nil
+        guideX = nil
+        guideY = nil
     }
 
     private func resetFraming() {
@@ -301,8 +410,20 @@ struct CoverPicker: View {
         draft.cover?.offsetY = nil
     }
 
+    private func add(_ sticker: CoverSticker) {
+        var sticker = sticker
+        // stagger new stickers so they don't stack exactly
+        let count = Double(draft.cover?.stickers?.count ?? 0)
+        sticker.x = 0.5 + (count.truncatingRemainder(dividingBy: 3) - 1) * 0.12
+        sticker.y = 0.55 + (count.truncatingRemainder(dividingBy: 2)) * 0.1
+        draft.cover?.stickers = (draft.cover?.stickers ?? []) + [sticker]
+        selected = .sticker(sticker.id)
+    }
+
+    // Controls
+
     @ViewBuilder
-    private var writingControls: some View {
+    private func previewControls(_ current: Cover) -> some View {
         if drawing {
             HStack(spacing: 10) {
                 Button("Cancel") {
@@ -322,23 +443,36 @@ struct CoverPicker: View {
             }
         } else {
             HStack(spacing: 10) {
-                Button { startWriting() } label: { Label("Write on Cover", systemImage: "pencil.tip.crop.circle") }
+                Button { startWriting() } label: { Label("Write", systemImage: "pencil.tip.crop.circle") }
                     .buttonStyle(.bordered)
                 if !draft.ink.strokes.isEmpty {
                     Button(role: .destructive) {
                         draft.ink = PKDrawing()
                         draft.inkChanged = true
                     } label: {
-                        Image(systemName: "trash")
+                        Label("Writing", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if case .sticker(let id) = selected {
+                    Button(role: .destructive) {
+                        draft.cover?.stickers?.removeAll { $0.id == id }
+                        selected = nil
+                    } label: {
+                        Label("Sticker", systemImage: "trash")
                     }
                     .buttonStyle(.bordered)
                 }
             }
+            Text("Drag, pinch and twist the title, stickers or photo.")
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
         }
     }
 
     private func startWriting() {
         inkBefore = (draft.ink, draft.inkChanged)
+        selected = nil
         drawing = true
     }
 
@@ -369,14 +503,26 @@ struct CoverPicker: View {
                 ForEach(CoverPattern.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
-            if draft.photo != nil {
-                Toggle("Pattern over photo", isOn: Binding(get: { current.patternOverPhoto ?? false }, set: { draft.cover?.patternOverPhoto = $0 }))
-                    .font(.system(size: 15))
+            if current.pattern != .plain {
+                HStack {
+                    ColorPicker("Pattern colour", selection: Binding(get: { Color(hex: current.patternColor ?? "FFFFFF") }, set: {
+                        draft.cover?.patternColor = UIColor($0).hex
+                    }), supportsOpacity: false)
+                    if current.patternColor != nil {
+                        Button("Reset") { draft.cover?.patternColor = nil }
+                            .buttonStyle(.borderless)
+                    }
+                }
+                .font(.system(size: 15))
+                if draft.photo != nil {
+                    Toggle("Pattern over photo", isOn: Binding(get: { current.patternOverPhoto ?? false }, set: { draft.cover?.patternOverPhoto = $0 }))
+                        .font(.system(size: 15))
+                }
             }
         }
     }
 
-    private func photoControls(_ current: Cover) -> some View {
+    private var photoControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Photo")
             HStack(spacing: 10) {
@@ -396,11 +542,6 @@ struct CoverPicker: View {
                     }
                     .buttonStyle(.bordered)
                 }
-            }
-            if draft.photo != nil {
-                Text("Pinch and drag the cover to frame the photo.")
-                    .font(.caption)
-                    .foregroundStyle(Theme.muted)
             }
         }
     }
@@ -424,14 +565,44 @@ struct CoverPicker: View {
                     ForEach(CoverTitleFont.allCases) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                Text("Drag the title on the cover. It snaps to a 3 \u{00D7} 3 grid.")
-                    .font(.caption)
-                    .foregroundStyle(Theme.muted)
             } else if current.mode == .handwritten {
                 Text("Write the title on the cover with your Pencil.")
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
             }
+        }
+    }
+
+    private var stickerControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Stickers")
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(34)), count: 8), alignment: .leading, spacing: 8) {
+                ForEach(Self.quickStickers, id: \.self) { emoji in
+                    Button { add(CoverSticker(emoji: emoji)) } label: {
+                        Text(emoji).font(.system(size: 24)).frame(width: 34, height: 34)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            HStack(spacing: 8) {
+                TextField("Any emoji or text", text: $customSticker)
+                    .textFieldStyle(.roundedBorder)
+                Button("Add") {
+                    let text = customSticker.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { return }
+                    add(CoverSticker(emoji: text))
+                    customSticker = ""
+                }
+                .buttonStyle(.bordered)
+            }
+            PhotosPicker(selection: $stickerPick, matching: .images) {
+                Label(lifting ? "Cutting out\u{2026}" : "Sticker from Photo", systemImage: "person.crop.square.badge.camera")
+            }
+            .buttonStyle(.bordered)
+            .disabled(lifting)
+            Text("Photo stickers cut out the subject automatically.")
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
         }
     }
 }
@@ -497,7 +668,7 @@ struct PaperPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 16) {
+            HStack(alignment: .center, spacing: 16) {
                 Image(uiImage: PaperRenderer.image(style, color: color, width: 90, pageSize: pageSize))
                     .resizable()
                     .scaledToFit()
@@ -511,6 +682,8 @@ struct PaperPicker: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(Theme.muted)
                 }
+                Spacer(minLength: 8)
+                if let size { sizeControls(size) }
             }
             Picker("Paper Colour", selection: $color) {
                 ForEach(PaperColor.allCases) { Text($0.title).tag($0) }
@@ -534,30 +707,42 @@ struct PaperPicker: View {
                     .buttonStyle(.plain)
                 }
             }
-            if let size {
-                HStack {
-                    Text("Size").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
-                    Spacer()
-                    Picker("Size", selection: Binding(get: { PageSize.match(size.wrappedValue)?.size ?? .a4 }, set: { preset in
-                        size.wrappedValue = preset.size(landscape: PageSize.match(size.wrappedValue)?.landscape ?? false)
-                    })) {
-                        ForEach(PageSize.allCases) { Text($0.title).tag($0) }
-                    }
-                    .pickerStyle(.menu)
-                    Picker("Orientation", selection: Binding(get: { PageSize.match(size.wrappedValue)?.landscape ?? false }, set: { landscape in
-                        size.wrappedValue = (PageSize.match(size.wrappedValue)?.size ?? .a4).size(landscape: landscape)
-                    })) {
-                        Image(systemName: "rectangle.portrait").tag(false)
-                        Image(systemName: "rectangle").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 110)
-                }
-            }
             if let allPages {
                 Toggle("Apply to All Pages", isOn: allPages)
                     .font(.system(size: 15, weight: .semibold))
             }
+        }
+    }
+
+    private func sizeControls(_ size: Binding<CGSize>) -> some View {
+        let match = PageSize.match(size.wrappedValue)
+        return VStack(alignment: .trailing, spacing: 8) {
+            Menu {
+                Picker("Size", selection: Binding(get: { match?.size ?? .a4 }, set: { preset in
+                    size.wrappedValue = preset.size(landscape: match?.landscape ?? false)
+                })) {
+                    ForEach(PageSize.allCases) { Text($0.title).tag($0) }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(match?.size.title ?? "Custom")
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 11, weight: .bold))
+                }
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.ink)
+                .padding(.horizontal, 12)
+                .frame(height: 32)
+                .background(Theme.raised, in: Capsule())
+                .overlay(Capsule().stroke(Theme.line, lineWidth: 1))
+            }
+            Picker("Orientation", selection: Binding(get: { match?.landscape ?? false }, set: { landscape in
+                size.wrappedValue = (match?.size ?? .a4).size(landscape: landscape)
+            })) {
+                Image(systemName: "rectangle.portrait").tag(false)
+                Image(systemName: "rectangle").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 100)
         }
     }
 

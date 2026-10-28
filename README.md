@@ -7,13 +7,13 @@ Personal, open-source iPad note-taking app: handwritten notebooks, a PDF/EPUB re
 - **Library**: notebooks, PDFs and EPUBs in one grid. Import from Files, rename, change cover and delete from the context menu.
 - **Notebooks**: paged, zoomable PencilKit canvas. Swipe left/right to turn pages (one finger, or two when finger drawing is on). Tapping `+` on the last page adds a new one.
   - **Paper**: blank, ruled (normal/narrow/wide/with margin), double line, handwriting, grid, fine grid, dotted, Cornell and music, on white, cream, yellow or dark paper. Set per page or for the whole notebook; new pages copy the page before them.
-  - **Page sizes**: A4, Letter, Legal, Square, 16:9 and 4:3, portrait or landscape, per page or for the whole notebook.
+  - **Page sizes**: A3, A4, A5, A6, B5, Letter, Legal, Executive, Tabloid, Square, 16:9, 4:3, Index Card and Phone, portrait or landscape, per page or for the whole notebook. Paper sizes keep their real proportions, so A5 holds fewer lines than A4.
   - **PDF pages in notebooks**: insert a PDF's pages into a notebook, optionally interleaved with blank paper after each page, and write on them.
   - **Images**: insert photos onto a page; they sit under the ink so you can write on them.
   - **Typed text with Markdown**: headings, bold, italic, strikethrough, code, bullets, checklists, quotes and links, with a formatting bar and live preview.
   - **Links on handwriting or text**: drag a box over writing (or use "Link This Text" on a text box) and point it at a PDF page, chapter or web address. The pencil still writes over linked areas.
   - **Move & Resize mode**: drag images, text and links around, pinch to resize, tap for edit or delete.
-  - **Covers**: colour, pattern (optionally over a photo), or your own photo framed by pinching and dragging. The title can be typed (drag it anywhere, it snaps to a 3x3 grid; pick style and font), handwritten with the Pencil, or left off. No cover shows the first page instead.
+  - **Covers**: colour, pattern in any colour (optionally over a photo), or your own photo. Everything on the cover moves like story stickers: drag, pinch and twist the title, stickers or photo, with snap guides for centring and levelling. Add emoji or text stickers, or photo stickers with the subject cut out automatically. The title can be typed (style and font), handwritten with the Pencil, or left off. No cover shows the first page instead.
 - **Remembers where you left off**: the page or chapter, side notes, annotate mode and divider position, per document or notebook.
 - **Focus mode**: the expand button hides the title bar, pane bars and status bar. The small button in the corner brings them back.
 - **Reader**: open a PDF or EPUB on its own. The pencil menu (top right) gives you:
@@ -32,6 +32,8 @@ Personal, open-source iPad note-taking app: handwritten notebooks, a PDF/EPUB re
   - **Handwriting to text**: tap the viewfinder button, drag a box over your handwriting, and it becomes a text box (undoable). Tap a text box to copy, edit or delete it.
   - Pinch to zoom, finger drawing on/off from the tool picker.
 
+- **Book Mode**: the book button turns pages with a real page curl, for notes and PDFs. Drag to fold the page and hold it, flick or drag past halfway to turn, let go early to drop it back. Fingers turn pages, the Pencil writes.
+- **Hide either side**: with notes beside a document, the PDF and Notes buttons show or hide each side.
 - **One top bar**: back, title, the reader's page and outline, the notebook's tools and page controls, and dedicated Annotate and Notes buttons. It collapses to icons when space is tight.
 - **Look**: warm paper tones, and an accent colour (plum, rose, ink, forest, amber or mono) plus light/dark/system from the palette button in the library.
 

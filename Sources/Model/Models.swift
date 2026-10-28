@@ -33,14 +33,19 @@ struct Cover: Codable, Hashable {
     var offsetY: Double?
     /// Spine or stripes drawn over the photo too.
     var patternOverPhoto: Bool?
+    var patternColor: String?
     /// Older covers only; `titleX`/`titleY` replace it.
     var titlePosition: CoverTitlePosition?
     var titleMode: CoverTitleMode?
     /// Title centre as fractions of the cover size.
     var titleX: Double?
     var titleY: Double?
+    var titleScale: Double?
+    /// Radians.
+    var titleRotation: Double?
     var titleStyle: CoverTitleStyle?
     var titleFont: CoverTitleFont?
+    var stickers: [CoverSticker]?
     /// Handwriting stored as cover-ink-<id>.drawing, drawn on a `canvasSize` cover.
     var ink: UUID?
 
@@ -62,6 +67,19 @@ struct Cover: Codable, Hashable {
         default: return CGPoint(x: 0.5, y: 0.14)
         }
     }
+}
+
+/// Emoji or text, or a picture stored as cover-sticker-<id>.png, placed like a story sticker.
+struct CoverSticker: Codable, Hashable, Identifiable {
+    var id = UUID()
+    /// Nil for picture stickers.
+    var emoji: String?
+    /// Centre as fractions of the cover size.
+    var x = 0.5
+    var y = 0.5
+    var scale = 1.0
+    /// Radians.
+    var rotation = 0.0
 }
 
 enum CoverPattern: String, Codable, CaseIterable, Identifiable {
@@ -137,28 +155,45 @@ enum PaperColor: String, Codable, CaseIterable, Identifiable {
 
 /// Page size presets; pages store the plain CGSize.
 enum PageSize: String, CaseIterable, Identifiable {
-    case a4, letter, legal, square, wide, standard
+    case a4, a5, a3, a6, b5, letter, legal, executive, tabloid, square, wide, standard, indexCard, phone
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .a4: "A4"
+        case .a5: "A5"
+        case .a3: "A3"
+        case .a6: "A6"
+        case .b5: "B5"
         case .letter: "Letter"
         case .legal: "Legal"
+        case .executive: "Executive"
+        case .tabloid: "Tabloid"
         case .square: "Square"
         case .wide: "16:9"
         case .standard: "4:3"
+        case .indexCard: "Index Card"
+        case .phone: "Phone"
         }
     }
 
+    /// Paper sizes keep their real proportions to A4, so smaller paper holds fewer lines.
     var portrait: CGSize {
         switch self {
         case .a4: notebookPageSize
+        case .a5: CGSize(width: 579, height: 820)
+        case .a3: CGSize(width: 1160, height: 1641)
+        case .a6: CGSize(width: 410, height: 579)
+        case .b5: CGSize(width: 688, height: 977)
         case .letter: CGSize(width: 820, height: 1061)
         case .legal: CGSize(width: 820, height: 1351)
+        case .executive: CGSize(width: 719, height: 1042)
+        case .tabloid: CGSize(width: 1091, height: 1687)
         case .square: CGSize(width: 900, height: 900)
         case .wide: CGSize(width: 820, height: 1458)
         case .standard: CGSize(width: 820, height: 1093)
+        case .indexCard: CGSize(width: 397, height: 595)
+        case .phone: CGSize(width: 600, height: 1300)
         }
     }
 
@@ -270,4 +305,6 @@ struct WorkspaceState: Codable {
     var notePage = 0
     /// Document open beside a notebook.
     var document: UUID?
+    var readerHidden: Bool?
+    var bookMode: Bool?
 }

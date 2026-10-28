@@ -161,6 +161,7 @@ private struct LibraryCell: View {
     @State private var thumbnail: UIImage?
     @State private var coverPhoto: UIImage?
     @State private var coverInk: UIImage?
+    @State private var coverStickers: [UUID: UIImage] = [:]
 
     private var icon: String {
         switch item.kind {
@@ -175,7 +176,7 @@ private struct LibraryCell: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 12).fill(Theme.raised)
                 if let cover = item.cover {
-                    CoverView(cover: cover, title: item.title, photo: coverPhoto, ink: coverInk)
+                    CoverView(cover: cover, title: item.title, photo: coverPhoto, ink: coverInk, stickerImages: coverStickers)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 } else if let thumbnail {
                     Image(uiImage: thumbnail)
@@ -217,6 +218,7 @@ private struct LibraryCell: View {
         .task(id: item.cover) {
             coverPhoto = library.coverPhoto(for: item)
             coverInk = library.coverInk(for: item).map(CoverView.inkImage)
+            coverStickers = library.coverStickers(for: item)
             if item.cover == nil, thumbnail == nil {
                 thumbnail = library.thumbnail(for: item, size: CGSize(width: 340, height: 472))
             }

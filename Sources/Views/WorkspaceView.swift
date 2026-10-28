@@ -22,8 +22,12 @@ struct WorkspaceView: View {
     @State private var message: String?
     @State private var focus = false
     @State private var width: CGFloat = 1000
+    /// Notes full width with the document tucked away.
+    @State private var readerHidden = false
+    @State private var bookMode = false
 
     private var notes: NotebookStore? { session?.store }
+    private var showsReader: Bool { reader != nil && !(readerHidden && session != nil) }
     private var showsInk: Bool { notes != nil || annotating }
     /// Icons only once both panes' controls share the bar on a narrow screen.
     private var compact: Bool { width < (reader != nil && notes != nil ? 1180 : 760) }
@@ -72,6 +76,11 @@ struct WorkspaceView: View {
                     PillLabel(title: "Annotate", symbol: "pencil.tip.crop.circle", active: annotating, compact: compact)
                 }
             }
+            if let reader, session != nil {
+                Button { withAnimation(.snappy) { readerHidden.toggle() } } label: {
+                    PillLabel(title: reader.pdf != nil ? "PDF" : "Book", symbol: "doc.text", active: !readerHidden, compact: compact)
+                }
+            }
             if let reader, item.kind != .notebook {
                 Button {
                     withAnimation(.snappy) { session == nil ? openSideNotes(for: reader.item) : closeNotes() }
@@ -79,6 +88,8 @@ struct WorkspaceView: View {
                     PillLabel(title: "Notes", symbol: "rectangle.split.2x1", active: session != nil, compact: compact)
                 }
             }
+            Button { withAnimation(.snappy) { bookMode.toggle() } } label: { BarIcon("book.pages", active: bookMode) }
+                .accessibilityLabel("Book Mode")
             Button { withAnimation { focus = true } } label: { BarIcon("arrow.up.left.and.arrow.down.right") }
             documentMenu
         }
@@ -95,19 +106,19 @@ struct WorkspaceView: View {
     private var panes: some View {
         GeometryReader { geo in
             HStack(spacing: 0) {
-                if let reader {
-                    ReaderPane(model: reader, annotating: annotating)
+                if let reader, showsReader {
+                    ReaderPane(model: reader, annotating: annotating, bookMode: bookMode)
                         .id(reader.item.id)
                         .frame(width: notes == nil ? geo.size.width : max(geo.size.width * split - 7, 0))
                 }
-                if reader != nil, notes != nil {
+                if showsReader, notes != nil {
                     SplitHandle()
                         .gesture(DragGesture(coordinateSpace: .named("workspace")).onChanged { value in
                             split = min(max(value.location.x / geo.size.width, 0.25), 0.75)
                         })
                 }
                 if let session {
-                    NotebookPane(session: session, pageIndex: $notePage, linkOptions: linkOptions, onOpenLink: open)
+                    NotebookPane(session: session, pageIndex: $notePage, bookMode: bookMode, linkOptions: linkOptions, onOpenLink: open)
                 }
             }
             .coordinateSpace(.named("workspace"))
@@ -145,6 +156,7 @@ struct WorkspaceView: View {
                     Button { closeReader() } label: { Label("Close \(reader.item.title)", systemImage: "xmark") }
                 }
             }
+            Toggle(isOn: $bookMode) { Label("Book Mode", systemImage: "book.pages") }
             if showsInk {
                 Toggle(isOn: Binding(get: { !tools.systemPicker }, set: { tools.setSystemPicker(!$0) })) {
                     Label("Compact Toolbar", systemImage: "rectangle.compress.vertical")
@@ -227,6 +239,8 @@ struct WorkspaceView: View {
         }
         annotating = saved.annotating && reader?.pdf != nil
         notePage = saved.notePage
+        readerHidden = saved.readerHidden ?? false
+        bookMode = saved.bookMode ?? false
     }
 
     private func restore(_ model: ReaderModel, from saved: WorkspaceState) {
@@ -247,6 +261,8 @@ struct WorkspaceView: View {
         state.chapter = reader?.state.chapterIndex ?? 0
         state.notePage = notePage
         state.document = item.kind == .notebook ? reader?.item.id : nil
+        state.readerHidden = readerHidden
+        state.bookMode = bookMode
         library.saveWorkspaceState(state, for: item)
     }
 
@@ -272,6 +288,7 @@ struct WorkspaceView: View {
     private func closeNotes() {
         notes?.flush()
         session = nil
+        readerHidden = false
     }
 
     private func closeReader() {
@@ -301,6 +318,8 @@ struct WorkspaceView: View {
         guard let doc = link.target.docID, let reader = openDocument(doc) else { return }
         switch link.target {
         case .pdfPage(_, let page):
+            readerHidden = false
+            reader.state.pageIndex = page
             reader.state.jump = PageJump(page: page)
         case .epubChapter(_, let href):
             if let i = reader.epub?.chapters.firstIndex(where: { $0.href == href }) {

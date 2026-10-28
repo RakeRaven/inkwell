@@ -41,6 +41,7 @@ final class NotesSession {
 struct NotebookPane: View {
     @Bindable var session: NotesSession
     @Binding var pageIndex: Int
+    let bookMode: Bool
     let linkOptions: [LinkOption]
     let onOpenLink: (NoteLink) -> Void
 
@@ -48,9 +49,30 @@ struct NotebookPane: View {
     private var pages: [NotePage] { store.notebook.pages }
     private var index: Int { min(max(pageIndex, 0), pages.count - 1) }
 
+    @ViewBuilder
+    private var pageView: some View {
+        if bookMode {
+            PageCurlPager(count: pages.count, index: $pageIndex, makePage: { _ in
+                let view = NoteCanvasView()
+                view.bookMode = true
+                return view
+            }, refresh: { view, i in
+                guard let canvas = view as? NoteCanvasView, pages.indices.contains(i) else { return }
+                canvas.onModeDone = { session.mode = .draw }
+                canvas.bind(store: store, page: pages[i], onOpenLink: onOpenLink, onLinkArea: { session.linkArea = $0 })
+                if i == index {
+                    canvas.mode = session.mode
+                    session.handle.view = canvas
+                }
+            })
+        } else {
+            NoteCanvas(store: store, page: pages[index], mode: $session.mode, handle: session.handle, onOpenLink: onOpenLink,
+                       onSwipe: swipe, onLinkArea: { session.linkArea = $0 })
+        }
+    }
+
     var body: some View {
-        NoteCanvas(store: store, page: pages[index], mode: $session.mode, handle: session.handle, onOpenLink: onOpenLink,
-                   onSwipe: swipe, onLinkArea: { session.linkArea = $0 })
+        pageView
             .overlay(alignment: .top) {
                 if let hint {
                     Text(hint)

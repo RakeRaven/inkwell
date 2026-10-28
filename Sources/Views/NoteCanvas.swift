@@ -37,18 +37,10 @@ struct NoteCanvas: UIViewRepresentable {
     }
 
     func updateUIView(_ view: NoteCanvasView, context: Context) {
-        let id = page.id
-        view.onDrawingChange = { [store] in store.setDrawing($0, for: id) }
-        view.onEditPage = { [store] change in store.update(id, change) }
-        view.onLinkTap = onOpenLink
         view.onModeDone = { mode = .draw }
         view.onSwipe = onSwipe
-        view.onLinkArea = onLinkArea
-        view.imageProvider = { [store] in store.image($0) }
         view.mode = mode
-        let notebook = store.notebook
-        view.show(page, paper: notebook.style(of: page), color: notebook.color(of: page), size: notebook.size(of: page),
-                  background: page.background.flatMap { store.pdfPage(for: $0) }) { store.drawing(for: id) }
+        view.bind(store: store, page: page, onOpenLink: onOpenLink, onLinkArea: onLinkArea)
     }
 }
 
@@ -70,13 +62,28 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
                 gesture.isEnabled = mode == .arrange
             }
             canvas.drawingGestureRecognizer.isEnabled = mode == .draw
-            canvas.isScrollEnabled = mode == .draw || mode == .arrange
             // arranging keeps two-finger scrolling; one finger moves things
             canvas.panGestureRecognizer.minimumNumberOfTouches = mode == .arrange ? 2 : 1
-            canvas.pinchGestureRecognizer?.isEnabled = mode != .arrange
             overlay.isUserInteractionEnabled = mode != .arrange
+            applyScrolling()
             rebuildOverlay()
         }
+    }
+
+    /// Whole page fitted on screen, no scrolling, fingers left free to turn pages.
+    var bookMode = false {
+        didSet {
+            guard bookMode != oldValue else { return }
+            ink.fingerAllowed = !bookMode
+            applyScrolling()
+            fittedSize = .zero
+            setNeedsLayout()
+        }
+    }
+
+    private func applyScrolling() {
+        canvas.isScrollEnabled = !bookMode && (mode == .draw || mode == .arrange)
+        canvas.pinchGestureRecognizer?.isEnabled = !bookMode && mode != .arrange
     }
 
     private let ink = InkController()
@@ -96,7 +103,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
     private var boxViews: [UUID: UIView] = [:]
     private var linkViews: [UUID: UIView] = [:]
     private var imageViews: [UUID: UIView] = [:]
-    private var fittedWidth: CGFloat = 0
+    private var fittedSize = CGSize.zero
     private var fitScale: CGFloat = 1
     private var pendingMath: DispatchWorkItem?
     private let swipeGate = SwipeGate()
@@ -153,7 +160,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
             }
         }
         swipeGate.canBegin = { [weak self] swipe in
-            guard let self, self.mode == .draw, self.canvas.zoomScale <= self.fitScale * 1.05 else { return false }
+            guard let self, self.mode == .draw, !self.bookMode, self.canvas.zoomScale <= self.fitScale * 1.05 else { return false }
             return swipe.numberOfTouchesRequired == 2 || self.ink.pencilOnly
         }
 
@@ -180,14 +187,14 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
             for view in [paper, media, overlay] as [UIView] {
                 view.bounds = CGRect(origin: .zero, size: size)
             }
-            fittedWidth = 0
+            fittedSize = .zero
             setNeedsLayout()
         }
         if page.id != self.page?.id {
             ink.load(drawing())
             // undo steps belong to the previous page
             canvas.undoManager?.removeAllActions()
-            canvas.setContentOffset(CGPoint(x: -canvas.contentInset.left, y: 0), animated: false)
+            canvas.setContentOffset(CGPoint(x: -canvas.contentInset.left, y: -canvas.contentInset.top), animated: false)
             if pushDirection != 0 {
                 let push = CATransition()
                 push.type = .push
@@ -210,6 +217,19 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
         let delta = swipe.direction == .left ? 1 : -1
         pushDirection = delta
         if onSwipe?(delta) != true { pushDirection = 0 }
+    }
+
+    /// Wires the view to a notebook page and shows it.
+    func bind(store: NotebookStore, page: NotePage, onOpenLink: @escaping (NoteLink) -> Void, onLinkArea: @escaping (CGRect) -> Void) {
+        let id = page.id
+        onDrawingChange = { [store] in store.setDrawing($0, for: id) }
+        onEditPage = { [store] change in store.update(id, change) }
+        onLinkTap = onOpenLink
+        self.onLinkArea = onLinkArea
+        imageProvider = { [store] in store.image($0) }
+        let notebook = store.notebook
+        show(page, paper: notebook.style(of: page), color: notebook.color(of: page), size: notebook.size(of: page),
+             background: page.background.flatMap { store.pdfPage(for: $0) }) { store.drawing(for: id) }
     }
 
     func beginNewText() {
@@ -249,9 +269,11 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard bounds.width > 0, bounds.width != fittedWidth else { return }
-        fittedWidth = bounds.width
-        let fit = bounds.width / pageSize.width
+        guard bounds.width > 0, bounds.height > 0, bounds.size != fittedSize else { return }
+        fittedSize = bounds.size
+        let fit = bookMode
+            ? min(bounds.width / pageSize.width, bounds.height / pageSize.height) * 0.96
+            : bounds.width / pageSize.width
         fitScale = fit
         canvas.minimumZoomScale = fit * 0.5
         canvas.maximumZoomScale = fit * 4
@@ -268,7 +290,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate {
             view.center = CGPoint(x: size.width / 2, y: size.height / 2)
         }
         let inset = max(0, (canvas.bounds.width - size.width) / 2)
-        canvas.contentInset = UIEdgeInsets(top: 0, left: inset, bottom: 0, right: inset)
+        let top = bookMode ? max(0, (canvas.bounds.height - size.height) / 2) : 0
+        canvas.contentInset = UIEdgeInsets(top: top, left: inset, bottom: top, right: inset)
         // sharper paper when zoomed, but only redrawn on real changes and capped to keep memory down
         let scale = min(traitCollection.displayScale * zoom, 3)
         if abs(scale - paper.contentScaleFactor) / scale > 0.15 {
