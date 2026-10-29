@@ -1299,7 +1299,10 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
                 editor.shape = drag.base.rotated(by: turn)
             } else {
                 let k = hypot(point.x - c.x, point.y - c.y) / max(hypot(drag.start.x - c.x, drag.start.y - c.y), 1)
-                editor.shape = drag.base.scaled(by: max(k, 0.1))
+                // never shrinks to a speck or past the page; diagrams need room for their detail
+                let b = drag.base.bounds, side = max(b.width, b.height, 1)
+                let smallest: CGFloat = drag.base.kind == .diagram ? 90 : 24
+                editor.shape = drag.base.scaled(by: min(max(k, smallest / side), pageSize.width * 1.5 / side))
             }
             shapesView.preview = editor.shape
             layoutHandles()

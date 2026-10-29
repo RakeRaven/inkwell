@@ -313,9 +313,19 @@ struct NotebookControls: View {
             } label: {
                 BarIcon(isLastPage ? "plus" : "chevron.right")
             }
+            // adds after this page from anywhere; hold for before or at the end
+            Menu {
+                Button { pageIndex = store.addPage(after: index) } label: { Label("Add Page After This", systemImage: "plus.square") }
+                Button { pageIndex = store.addPage(after: index - 1) } label: { Label("Add Page Before This", systemImage: "plus.square.on.square") }
+                Button { pageIndex = store.addPage(after: pages.count - 1) } label: { Label("Add Page at End", systemImage: "text.badge.plus") }
+            } label: {
+                BarIcon("doc.badge.plus")
+            } primaryAction: {
+                pageIndex = store.addPage(after: index)
+            }
+            .accessibilityLabel("Add Page")
             bookmarks
             Menu {
-                Button { pageIndex = store.addPage(after: index) } label: { Label("Insert Page After", systemImage: "plus.square") }
                 Button(role: .destructive) { session.confirmDelete = true } label: { Label("Delete Page", systemImage: "trash") }
             } label: {
                 BarIcon("ellipsis")
@@ -419,8 +429,8 @@ struct NotebookControls: View {
             )
             Toggle(isOn: Binding(get: { store.notebook.blankBacks == true }, set: { store.setBlankBacks($0) })) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Blank Backs").font(.system(size: 15, weight: .semibold))
-                    Text("Every page gets a plain back, like writing only on the fronts").font(.caption).foregroundStyle(Theme.muted)
+                    Text("Interleave").font(.system(size: 15, weight: .semibold))
+                    Text("A blank page after every page").font(.caption).foregroundStyle(Theme.muted)
                 }
             }
         }

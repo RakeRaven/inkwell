@@ -180,7 +180,7 @@ extension ShapeItem {
         case .ellipse:
             s.radii = radii.map { CGSize(width: $0.width * k, height: $0.height * k) }
         case .diagram:
-            s.radii = radii.map { CGSize(width: max($0.width * k, 20), height: max($0.height * k, 20)) }
+            s.radii = radii.map { CGSize(width: $0.width * k, height: $0.height * k) }
         case .projectile:
             s.projectile?.scale = (projectile?.scale ?? 12) * Double(k)
         case .graph:
