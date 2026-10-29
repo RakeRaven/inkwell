@@ -119,6 +119,19 @@ struct ShapeInspector: View {
                 sectionTitle("Component")
                 typePicker(DiagramType.circuit, current: d.type)
             }
+            if d.type == .calendar {
+                let now = Calendar.current.dateComponents([.year, .month], from: Date())
+                sectionTitle("Month")
+                Picker("Month", selection: Binding(get: { d.month ?? now.month ?? 1 }, set: { m in setDiagram { $0.month = m } })) {
+                    ForEach(1...12, id: \.self) { Text(DateFormatter().monthSymbols[$0 - 1]).tag($0) }
+                }
+                .pickerStyle(.menu)
+                Stepper("Year \(String(d.year ?? now.year ?? 2026))", value: Binding(get: { d.year ?? now.year ?? 2026 }, set: { y in setDiagram { $0.year = y } }), in: 1900...2200)
+                    .font(.system(size: 15, weight: .semibold))
+                Text("Tap a day or the title to write in it.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+            }
             Text("Drag the round knobs to resize and turn it.")
                 .font(.caption)
                 .foregroundStyle(Theme.muted)

@@ -299,6 +299,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
     private let swipeGate = SwipeGate()
     private var pushDirection = 0
     private var dragging: (item: Item, start: CGPoint)?
+    /// Handwriting on a list being moved, which goes along with it.
+    private var carried: (strokes: Set<Int>, base: PKDrawing)?
     private var pinching: Item?
     private var menuItem: Item?
 
@@ -384,6 +386,11 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         }
         shapeMove.maximumNumberOfTouches = 1
         canvas.panGestureRecognizer.require(toFail: shapeMove)
+        // a tap on a shape is ours alone; PencilKit's Select/Paste menu waits for it to fail
+        shapeGate.outranks = { [weak self] mine, other in
+            guard let self else { return false }
+            return mine === self.shapeTap && other is UITapGestureRecognizer && other.view === self.canvas && other !== self.typeTap
+        }
         shapeGate.shouldBegin = { [weak self] gesture in
             guard let self, self.mode == .draw else { return false }
             let point = gesture.location(in: self.overlay)
@@ -625,8 +632,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         spine.place(in: bounds)
         bringSubviewToFront(spine)
         guard bounds.width > 0, bounds.height > 0, bounds.size != fittedSize else { return }
-        // only a change of width refits; a height change keeps the zoom the user had
-        let keep = fittedSize.width == bounds.width
+        // a resize keeps how far in the user was relative to the whole page
+        let relative = fittedSize == .zero ? 1 : canvas.zoomScale / max(fitScale, 0.0001)
         fittedSize = bounds.size
         // the whole page fits, so landscape doesn't open zoomed in
         let fit = min(bounds.width / pageSize.width, bounds.height / pageSize.height)
@@ -634,7 +641,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         // a book page never shrinks below the paper
         canvas.minimumZoomScale = bookMode ? fit : fit * 0.3
         canvas.maximumZoomScale = fit * 4
-        canvas.zoomScale = keep ? max(canvas.zoomScale, canvas.minimumZoomScale) : fit
+        canvas.zoomScale = min(max(fit * relative, canvas.minimumZoomScale), canvas.maximumZoomScale)
         syncZoom()
         applyBookZoom()
     }
@@ -717,7 +724,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
     private func rebuildOverlay() {
         // the box being typed in stays put, or the keyboard would drop
         if let list = editingList, page?.checklists.contains(where: { $0.id == list.list.id }) != true { editingList = nil }
-        overlay.subviews.filter { $0 !== typing?.view && $0 !== editingList && $0 !== calendarEditor?.view }.forEach { $0.removeFromSuperview() }
+        // what's being typed in or dragged stays put, or the keyboard drops and drags get cut off
+        let kept: [UIView] = [typing?.view, editingList, calendarEditor?.view, rotateKnob, scaleKnob].compactMap { $0 } + handleViews
+        overlay.subviews.filter { view in !kept.contains { $0 === view } }.forEach { $0.removeFromSuperview() }
         media.subviews.forEach { $0.removeFromSuperview() }
         checklistViews.removeAll()
         voiceViews.removeAll()
@@ -782,7 +791,6 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
             }
         }
         overlay.layer.addSublayer(selectionLayer)
-        handleViews = []
         layoutHandles()
         raiseLayers()
         shareRulerScale()
@@ -981,6 +989,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         case .began:
             guard let item = item(at: point) else { return }
             dragging = (item, point)
+            if case .checklist(let id) = item, let view = checklistViews[id] {
+                carried = (Set(strokes(in: view.frame.insetBy(dx: -6, dy: -6))), canvas.drawing)
+            }
         case .changed:
             guard let dragging else { return }
             let d = CGSize(width: point.x - dragging.start.x, height: point.y - dragging.start.y)
@@ -989,10 +1000,15 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
             } else if let view = view(for: dragging.item) {
                 view.transform = CGAffineTransform(translationX: d.width, y: d.height)
             }
+            if let carried { ink.load(Self.moving(carried, by: d)) }
         case .ended:
             guard let dragging else { return }
             self.dragging = nil
             let dx = point.x - dragging.start.x, dy = point.y - dragging.start.y
+            if let carried {
+                self.carried = nil
+                ink.commit(Self.moving(carried, by: CGSize(width: dx, height: dy)), name: "Move")
+            }
             editPage("Move") { page in
                 switch dragging.item {
                 case .text(let id):
@@ -1029,8 +1045,19 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
             shapesView.preview = nil
         default:
             dragging = nil
+            if let carried { ink.load(carried.base) }
+            carried = nil
             rebuildOverlay()
         }
+    }
+
+    private static func moving(_ carried: (strokes: Set<Int>, base: PKDrawing), by d: CGSize) -> PKDrawing {
+        PKDrawing(strokes: carried.base.strokes.enumerated().map { i, stroke in
+            guard carried.strokes.contains(i) else { return stroke }
+            var moved = stroke
+            moved.transform = stroke.transform.concatenating(CGAffineTransform(translationX: d.width, y: d.height))
+            return moved
+        })
     }
 
     /// Pinch scales a picture, or a text box's font.
@@ -1356,8 +1383,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         self.editor = editor
         shapesView.selected = id
         rebuildOverlay()
-        // calendars are edited in place, from the keyboard bar
-        if shape.diagram?.type != .calendar { presentInspector(for: shape, editor: editor) }
+        presentInspector(for: shape, editor: editor)
     }
 
     private func deselectShape(animated: Bool = true) {
@@ -1410,6 +1436,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         }
         let size = 32 / max(canvas.zoomScale, 0.1)
         for (handle, p) in zip(handleViews, points) {
+            overlay.bringSubviewToFront(handle)
             handle.bounds = CGRect(x: 0, y: 0, width: size, height: size)
             handle.center = p
             handle.layer.cornerRadius = size / 2
@@ -1571,7 +1598,7 @@ extension NoteCanvasView {
     /// Opens a text box for typing (or Scribble) right on the page.
     func beginTyping(_ box: TextBox, isNew: Bool) {
         endTyping()
-        let view = UITextView()
+        let view = PencilThroughTextView()
         view.text = box.text
         view.font = Self.typingFont(box.fontSize)
         view.textColor = box.sticky == nil ? inkColor : .black
@@ -1759,10 +1786,9 @@ extension NoteCanvasView {
     }
 }
 
-/// With the text pen, writing anywhere on the page becomes typed text through Scribble, Apple's own handwriting engine.
 /// Typing into one spot of a calendar.
 final class CalendarEdit {
-    let view = UITextView()
+    let view = PencilThroughTextView()
     let shape: UUID
     let key: String
     let baseSize: CGFloat
@@ -1903,14 +1929,17 @@ extension NoteCanvasView {
     }
 }
 
+/// With the text pen, writing anywhere on the page becomes typed text through Scribble, Apple's own handwriting engine.
 extension NoteCanvasView: UIIndirectScribbleInteractionDelegate {
     private static let newText = "new"
+    private static let calendarText = "calendar"
 
     func indirectScribbleInteraction(_ interaction: UIInteraction, requestElementsIn rect: CGRect, completion: @escaping ([String]) -> Void) {
         guard InkTools.shared.writesText, mode == .draw, let page else { return completion([]) }
         // writing over existing text goes into it; a new box only where there's none, or the two fight
         var ids = page.textBoxes.filter { $0.anchor == nil }.map(\.id.uuidString)
         if let typing, typing.isNew { ids.insert(typing.box.id.uuidString, at: 0) }
+        if calendarEditor != nil { ids.insert(Self.calendarText, at: 0) }
         let near = ids.filter { frame(of: $0)?.intersects(rect) == true }
         completion(near.isEmpty ? [Self.newText] : near)
     }
@@ -1918,7 +1947,9 @@ extension NoteCanvasView: UIIndirectScribbleInteractionDelegate {
     /// Where writing goes into a box: the box, plus room to carry on along the line and just below.
     private func frame(of id: String) -> CGRect? {
         let f: CGRect
-        if let typing, typing.box.id.uuidString == id {
+        if id == Self.calendarText, let view = calendarEditor?.view {
+            return overlay.convert(view.frame, to: self)
+        } else if let typing, typing.box.id.uuidString == id {
             f = typing.view.frame
         } else if let box = page?.textBoxes.first(where: { $0.id.uuidString == id }), let view = boxViews[box.id] {
             f = view.frame
@@ -1929,7 +1960,8 @@ extension NoteCanvasView: UIIndirectScribbleInteractionDelegate {
     }
 
     func indirectScribbleInteraction(_ interaction: UIInteraction, isElementFocused elementIdentifier: String) -> Bool {
-        typing?.box.id.uuidString == elementIdentifier && typing?.view.isFirstResponder == true
+        if elementIdentifier == Self.calendarText { return calendarEditor?.view.isFirstResponder == true }
+        return typing?.box.id.uuidString == elementIdentifier && typing?.view.isFirstResponder == true
     }
 
     func indirectScribbleInteraction(_ interaction: UIInteraction, frameForElement elementIdentifier: String) -> CGRect {
@@ -1941,6 +1973,10 @@ extension NoteCanvasView: UIIndirectScribbleInteractionDelegate {
 
     func indirectScribbleInteraction(_ interaction: UIInteraction, focusElementIfNeeded elementIdentifier: String, referencePoint focusReferencePoint: CGPoint,
                                      completion: @escaping ((any UIResponder & UITextInput)?) -> Void) {
+        if elementIdentifier == Self.calendarText, let view = calendarEditor?.view {
+            view.becomeFirstResponder()
+            return completion(view)
+        }
         if typing?.box.id.uuidString != elementIdentifier {
             if let box = page?.textBoxes.first(where: { $0.id.uuidString == elementIdentifier }) {
                 beginTyping(box, isNew: false)
@@ -1957,6 +1993,14 @@ extension NoteCanvasView: UIIndirectScribbleInteractionDelegate {
 extension UIFont {
     func withWeight(_ weight: UIFont.Weight) -> UIFont {
         UIFont(descriptor: fontDescriptor.addingAttributes([.traits: [UIFontDescriptor.TraitKey.weight: weight]]), size: pointSize)
+    }
+}
+
+/// The pencil goes through to the page under it: ink with a pen, or Scribble into this view with the text pen.
+final class PencilThroughTextView: UITextView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if event?.allTouches?.contains(where: { $0.type == .pencil }) == true { return nil }
+        return super.hitTest(point, with: event)
     }
 }
 
@@ -1992,9 +2036,15 @@ final class FoldGate: NSObject, UIGestureRecognizerDelegate {
 
 final class GestureGate: NSObject, UIGestureRecognizerDelegate {
     var shouldBegin: (UIGestureRecognizer) -> Bool = { _ in true }
+    /// Whether the other recognizer has to wait for this one to fail.
+    var outranks: (UIGestureRecognizer, UIGestureRecognizer) -> Bool = { _, _ in false }
 
     func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
         shouldBegin(gesture)
+    }
+
+    func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        outranks(gesture, other)
     }
 }
 

@@ -266,7 +266,7 @@ struct WorkspaceView: View {
         if let design = item.cover {
             let view = CoverView(cover: design, title: item.title, photo: library.coverPhoto(for: item),
                                  ink: library.coverInk(for: item).map(CoverView.inkImage), stickerImages: library.coverStickers(for: item))
-                .frame(width: width, height: width / 0.72)
+                .frame(width: width, height: height)
             let renderer = ImageRenderer(content: view)
             renderer.scale = 2
             cover = renderer.uiImage
