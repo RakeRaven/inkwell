@@ -114,8 +114,10 @@ struct NotebookPane: View {
                         .allowsHitTesting(false)
                 }
             }
-            .confirmationDialog("Delete this page?", isPresented: $session.confirmDelete, titleVisibility: .visible) {
+            // an alert sits mid-screen; a dialog anchored to the whole page could land off it
+            .alert("Delete this page?", isPresented: $session.confirmDelete) {
                 Button("Delete Page", role: .destructive) { pageIndex = store.deletePage(at: index) }
+                Button("Cancel", role: .cancel) {}
             }
             .confirmationDialog("Link to", isPresented: Binding(get: { session.linkArea != nil && !session.askingURL }, set: { shown in
                 if !shown, !session.askingURL { session.linkArea = nil }

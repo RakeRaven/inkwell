@@ -309,7 +309,22 @@ enum ShapeRecognizer {
                 }
             }
         }
+        // a wobble or notch makes a corner that hardly changes the shape; drop the least important
+        // while it's tiny next to the whole thing, so real corners are all that's left
+        let box = boundingBox(v), whole = max(box.width, box.height)
+        while v.count > (closed ? 3 : 2) {
+            let range = closed ? Array(v.indices) : Array(v.indices.dropFirst().dropLast())
+            guard let i = range.min(by: { cornerArea(v, $0) < cornerArea(v, $1) }),
+                  cornerArea(v, i) < whole * whole * 0.02 else { break }
+            v.remove(at: i)
+        }
         return v
+    }
+
+    /// Area of the triangle a vertex makes with its neighbours.
+    private static func cornerArea(_ v: [CGPoint], _ i: Int) -> CGFloat {
+        let a = v[(i - 1 + v.count) % v.count], b = v[i], c = v[(i + 1) % v.count]
+        return abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2
     }
 
     /// Snaps near-horizontal and near-vertical lines straight.
