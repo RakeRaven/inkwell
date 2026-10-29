@@ -13,11 +13,13 @@ final class ChecklistView: UIView, UITextFieldDelegate {
 
     private let titleField = Field()
     private let more = UIButton(type: .system)
+    private let add = UIButton(type: .system)
     private var rows: [Row] = []
     private var dragging: (row: Row, startY: CGFloat)?
 
     private var rowHeight: CGFloat { list.fontSize * 1.75 }
     private var titleHeight: CGFloat { list.fontSize * 1.9 }
+    private var addHeight: CGFloat { list.fontSize * 1.4 }
 
     init(list: Checklist, ink: UIColor) {
         self.list = list
@@ -45,18 +47,26 @@ final class ChecklistView: UIView, UITextFieldDelegate {
             },
         ])
         addSubview(more)
+        add.setImage(UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: list.fontSize * 0.7)), for: .normal)
+        add.setTitle(" Add item", for: .normal)
+        add.titleLabel?.font = NoteCanvasView.typingFont(list.fontSize * 0.7)
+        add.tintColor = ink.withAlphaComponent(0.4)
+        add.contentHorizontalAlignment = .leading
+        add.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let item = ChecklistItem(text: "")
+            self.list.items.append(item)
+            self.rows.append(self.makeRow(item))
+            self.layout()
+            self.onSave?(self.list, "Add Item")
+        }, for: .touchUpInside)
+        addSubview(add)
         rows = list.items.map(makeRow)
         layout()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
-    }
-
-    /// Puts the cursor in a row, for a list that was just added.
-    func focus(row i: Int) {
-        guard rows.indices.contains(i) else { return }
-        rows[i].field.becomeFirstResponder()
     }
 
     private func makeRow(_ item: ChecklistItem) -> Row {
@@ -92,6 +102,9 @@ final class ChecklistView: UIView, UITextFieldDelegate {
                                  withConfiguration: UIImage.SymbolConfiguration(pointSize: size)), for: .normal)
         row.box.tintColor = done ? Theme.uiAccent : ink
         row.field.textColor = done ? ink.withAlphaComponent(0.45) : ink
+        // a line through the row crosses out handwriting as well as typing
+        row.strike.backgroundColor = ink.withAlphaComponent(0.55)
+        row.strike.isHidden = !done
         row.handle.tintColor = ink.withAlphaComponent(0.3)
         row.handle.image = UIImage(systemName: "line.3.horizontal", withConfiguration: UIImage.SymbolConfiguration(pointSize: size * 0.7))
     }
@@ -107,8 +120,10 @@ final class ChecklistView: UIView, UITextFieldDelegate {
         for (i, row) in rows.enumerated() where row !== dragging?.row {
             row.frame = CGRect(x: 0, y: titleHeight + CGFloat(i) * rowHeight, width: width, height: rowHeight)
         }
+        let bottom = titleHeight + CGFloat(rows.count) * rowHeight
+        add.frame = CGRect(x: 0, y: bottom, width: 160, height: addHeight)
         let origin = frame.origin == .zero ? list.origin : frame.origin
-        frame = CGRect(origin: origin, size: CGSize(width: width, height: titleHeight + CGFloat(max(rows.count, 1)) * rowHeight))
+        frame = CGRect(origin: origin, size: CGSize(width: width, height: bottom + addHeight))
     }
 
     private func insertRow(after i: Int) {
@@ -174,11 +189,18 @@ final class ChecklistView: UIView, UITextFieldDelegate {
             // taken off the page (deleted, or the page changed) rather than finished
             guard self.superview != nil else { return }
             self.list.title = self.titleField.text?.trimmingCharacters(in: .whitespaces) ?? ""
-            self.list.items.removeAll { $0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+            // blank rows stay, they may be handwritten in
             self.onEditing?(false)
             let empty = self.list.title.isEmpty && self.list.items.isEmpty
             self.onSave?(empty ? nil : self.list, empty ? "Delete List" : "Edit To-Do List")
         }
+    }
+
+    /// The pencil writes straight over the list as ink; only the boxes and buttons take it.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard event?.allTouches?.contains(where: { $0.type == .pencil }) == true else { return super.hitTest(point, with: event) }
+        let controls = rows.flatMap { [$0.box, $0.handle] } + [more, add]
+        return controls.first { $0.convert($0.bounds, to: self).contains(point) && !$0.isHidden }
     }
 
     private var containsFirstResponder: Bool {
@@ -199,13 +221,15 @@ final class ChecklistView: UIView, UITextFieldDelegate {
         let box = UIButton(type: .custom)
         let field = Field()
         let handle = UIImageView()
+        let strike = UIView()
 
         init(id: UUID) {
             self.id = id
             super.init(frame: .zero)
             handle.isUserInteractionEnabled = true
             handle.contentMode = .center
-            [box, field, handle].forEach(addSubview)
+            strike.isUserInteractionEnabled = false
+            [box, field, handle, strike].forEach(addSubview)
         }
 
         required init?(coder: NSCoder) {
@@ -218,6 +242,7 @@ final class ChecklistView: UIView, UITextFieldDelegate {
             box.frame = CGRect(x: 0, y: 0, width: h, height: h)
             handle.frame = CGRect(x: bounds.width - h, y: 0, width: h, height: h)
             field.frame = CGRect(x: h + 4, y: 0, width: bounds.width - h * 2 - 8, height: h)
+            strike.frame = CGRect(x: h + 2, y: h / 2 - 1, width: bounds.width - h * 2 - 4, height: 2)
         }
     }
 }

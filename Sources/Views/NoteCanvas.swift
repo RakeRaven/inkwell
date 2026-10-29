@@ -552,8 +552,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
     func addChecklist() {
         let c = visibleCenter()
         let list = Checklist(title: "", items: [ChecklistItem(text: "")], origin: CGPoint(x: c.x - ChecklistView.width / 2, y: c.y - 80))
+        // left unfocused: write in it with the pencil, or tap a row to type
         editPage("Add To-Do List") { $0.checklists.append(list) }
-        (checklistViews[list.id] as? ChecklistView)?.focus(row: 0)
     }
 
     func addVoiceNote(file: String, duration: TimeInterval) {
@@ -1820,7 +1820,8 @@ extension NoteCanvasView {
         preview.diagram?.notes = (d.notes ?? []).filter { $0.key != key } + (title ? [CalendarNote(key: "title", text: " ")] : [])
         shapesView.preview = preview
         overlay.addSubview(view)
-        view.becomeFirstResponder()
+        // after the tap finishes, or the canvas takes focus back as the touch ends and the keyboard drops
+        DispatchQueue.main.async { view.becomeFirstResponder() }
     }
 
     private func styleCalendarEdit() {

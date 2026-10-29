@@ -261,8 +261,10 @@ final class OpeningFlipView: UIView {
                 area = CGRect(x: area.midX, y: area.minY, width: area.width / 2, height: area.height)
             }
         } else {
-            let height = bounds.width * page.height / max(page.width, 1)
-            area = CGRect(x: 0, y: max(0, (bounds.height - height) / 2), width: bounds.width, height: height)
+            // the whole page fits on screen, like the canvas fits it
+            let scale = min(bounds.width / max(page.width, 1), bounds.height / max(page.height, 1))
+            let size = CGSize(width: page.width * scale, height: page.height * scale)
+            area = CGRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2, width: size.width, height: size.height)
         }
         // a closed book has nothing on its left until the cover swings over
         var blank: UIView?
