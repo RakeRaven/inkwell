@@ -87,8 +87,10 @@ enum ShapeRecognizer {
         let frame = tightestFrame(points)
         let ellipseError = ellipseFit(points, in: frame)
         let boxError = boxFit(points, in: frame)
-        // a round loop turns gently everywhere; corners turn hard in one spot
-        if sharpestTurn(points) < 55 || (ellipseError < 0.08 && ellipseError < boxError) {
+        // a circle sits about 0.05 off its own bounding box anyway, so box fit alone can't tell them
+        // apart; a loop is round when an ellipse fits it nearly as well as a box does
+        let roundish = ellipseError < boxError * 2 && ellipseError < 0.14
+        if sharpestTurn(points) < 55 || roundish {
             return ellipseOutline(frame, startingAt: first)
         }
         let corners = removeFlat(simplifyClosed(points, epsilon: size * 0.06), closed: true, minEdge: size * 0.1)
@@ -108,7 +110,7 @@ enum ShapeRecognizer {
     private static func ellipseOutline(_ frame: Frame, startingAt start: CGPoint) -> ShapeOutline {
         var rx = frame.width / 2, ry = frame.height / 2
         var angle = frame.angle
-        if rx / max(ry, 1) > 0.85, rx / max(ry, 1) < 1.18 {
+        if rx / max(ry, 1) > 0.8, rx / max(ry, 1) < 1.25 {
             rx = (rx + ry) / 2
             ry = rx
             angle = 0
@@ -117,15 +119,15 @@ enum ShapeRecognizer {
                             ellipse: (frame.center, CGSize(width: rx, height: ry), angle))
     }
 
-    /// Biggest change of direction over a short stretch of the loop, in degrees.
+    /// Biggest change of direction over a short stretch of the loop, in degrees. The seam where
+    /// the pen went down and lifted is skipped, since its hooks aren't corners.
     private static func sharpestTurn(_ points: [CGPoint]) -> CGFloat {
         let n = points.count
-        guard n > 12 else { return 180 }
-        let k = 4
+        let k = 4, seam = max(k, n / 14)
+        guard n > seam * 2 + 4 else { return 180 }
         var worst: CGFloat = 0
-        for i in 0..<n {
-            let a = points[(i - k + n) % n], b = points[i], c = points[(i + k) % n]
-            worst = max(worst, 180 - angle(a, b, c))
+        for i in seam..<(n - seam) {
+            worst = max(worst, 180 - angle(points[i - k], points[i], points[i + k]))
         }
         return worst
     }
@@ -179,7 +181,7 @@ enum ShapeRecognizer {
     private static func ellipse(in frame: Frame, startingAt start: CGPoint) -> [CGPoint] {
         var rx = frame.width / 2, ry = frame.height / 2
         var frame = frame
-        if rx / max(ry, 1) > 0.85, rx / max(ry, 1) < 1.18 {
+        if rx / max(ry, 1) > 0.8, rx / max(ry, 1) < 1.25 {
             rx = (rx + ry) / 2
             ry = rx
             frame.angle = 0

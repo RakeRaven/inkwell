@@ -22,7 +22,6 @@ final class NotesSession {
     var pickingPhoto = false
     var photoItem: PhotosPickerItem?
     var importingPDF = false
-    var interleave = false
     /// Box dragged in link mode, waiting for a target.
     var linkArea: CGRect?
     var askingURL = false
@@ -168,7 +167,7 @@ struct NotebookPane: View {
                 switch result {
                 case .success(let url):
                     do {
-                        pageIndex = try store.insertPDF(from: url, after: index, interleave: session.interleave)
+                        pageIndex = try store.insertPDF(from: url, after: index)
                     } catch {
                         session.message = error.localizedDescription
                     }
@@ -294,17 +293,8 @@ struct NotebookControls: View {
                 } label: {
                     Label("Computing", systemImage: "cpu")
                 }
-                Button {
-                    session.interleave = false
-                    session.importingPDF = true
-                } label: {
+                Button { session.importingPDF = true } label: {
                     Label("PDF Pages", systemImage: "doc.richtext")
-                }
-                Button {
-                    session.interleave = true
-                    session.importingPDF = true
-                } label: {
-                    Label("PDF Pages, Interleaved with Paper", systemImage: "doc.on.doc")
                 }
             } label: {
                 BarIcon("plus.square.on.square")
@@ -418,14 +408,22 @@ struct NotebookControls: View {
 
     private var paperPicker: some View {
         let hasPDF = pages[index].background != nil
-        return PaperPicker(
+        return VStack(alignment: .leading, spacing: 14) {
+            PaperPicker(
             style: Binding(get: { store.notebook.style(of: pages[index]) }, set: { setPaper($0, store.notebook.color(of: pages[index])) }),
             color: Binding(get: { store.notebook.color(of: pages[index]) }, set: { setPaper(store.notebook.style(of: pages[index]), $0) }),
             size: hasPDF ? nil : Binding(get: { store.notebook.size(of: pages[index]) }, set: {
                 store.setSize($0, page: session.allPages ? nil : pages[index].id)
             }),
             allPages: $session.allPages
-        )
+            )
+            Toggle(isOn: Binding(get: { store.notebook.blankBacks == true }, set: { store.setBlankBacks($0) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Blank Backs").font(.system(size: 15, weight: .semibold))
+                    Text("Every page gets a plain back, like writing only on the fronts").font(.caption).foregroundStyle(Theme.muted)
+                }
+            }
+        }
         .padding(20)
         .frame(width: 440)
     }

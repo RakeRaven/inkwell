@@ -424,6 +424,8 @@ struct NotePage: Codable, Identifiable, Equatable {
     var checklists: [Checklist] = []
     var voiceNotes: [VoiceNote] = []
     var inkIndex: InkIndex?
+    /// The plain back of the page before it, in a notebook with blank backs.
+    var back: Bool?
 
     var bookmarked: Bool { !(folds ?? []).isEmpty }
 }
@@ -464,6 +466,8 @@ struct Notebook: Codable {
     var paperColor: PaperColor?
     var size: CGSize?
     var pages: [NotePage] = [NotePage()]
+    /// Every page is followed by a blank back, like writing only on the fronts of a book.
+    var blankBacks: Bool?
 
     func style(of page: NotePage) -> PaperStyle { page.paper ?? paper }
     func color(of page: NotePage) -> PaperColor { page.paperColor ?? paperColor ?? .white }

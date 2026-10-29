@@ -51,7 +51,7 @@ struct NoteCanvas: UIViewRepresentable {
 }
 
 /// One notebook page: paper, pictures, ink, and an overlay of text boxes and links, all zooming together.
-final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPresentationControllerDelegate, UITextViewDelegate {
+final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDelegate {
     var onDrawingChange: ((PKDrawing) -> Void)?
     var onEditPage: (((inout NotePage) -> Void) -> Void)?
     var onLinkTap: ((NoteLink) -> Void)?
@@ -265,7 +265,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     private var liveShape: ShapeItem?
     private var selectedShape: UUID?
     private var editor: ShapeEditor?
-    private weak var inspector: UIViewController?
+    private weak var inspector: FloatingPanel?
     private var handleViews: [UIView] = []
     /// A handle or the whole selected shape is being dragged; the page copy is stale till it ends.
     private var shapeDrag: (start: CGPoint, base: ShapeItem)?
@@ -287,6 +287,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     private var imageViews: [UUID: UIView] = [:]
     private var fittedSize = CGSize.zero
     private var fitScale: CGFloat = 1
+    /// How much of the page the keyboard covers, so typing near the bottom can scroll up.
+    private var keyboardOverlap: CGFloat = 0
     private var pendingMath: DispatchWorkItem?
     private let swipeGate = SwipeGate()
     private var pushDirection = 0
@@ -350,6 +352,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         addInteraction(UIIndirectScribbleInteraction(delegate: self))
         NotificationCenter.default.addObserver(forName: VoicePlayer.changed, object: nil, queue: .main) { [weak self] _ in
             self?.rebuildOverlay()
+        }
+        NotificationCenter.default.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { [weak self] note in
+            self?.keyboardMoved(note)
         }
 
         selectionLayer.fillColor = Theme.uiAccent.withAlphaComponent(0.08).cgColor
@@ -608,6 +613,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         spine.place(in: bounds)
         bringSubviewToFront(spine)
         guard bounds.width > 0, bounds.height > 0, bounds.size != fittedSize else { return }
+        // only a change of width refits; a height change keeps the zoom the user had
+        let keep = fittedSize.width == bounds.width
         fittedSize = bounds.size
         // the whole page fits, so landscape doesn't open zoomed in
         let fit = min(bounds.width / pageSize.width, bounds.height / pageSize.height)
@@ -615,9 +622,19 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         // a book page never shrinks below the paper
         canvas.minimumZoomScale = bookMode ? fit : fit * 0.3
         canvas.maximumZoomScale = fit * 4
-        canvas.zoomScale = fit
+        canvas.zoomScale = keep ? max(canvas.zoomScale, canvas.minimumZoomScale) : fit
         syncZoom()
         applyBookZoom()
+    }
+
+    private func keyboardMoved(_ note: Notification) {
+        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect, let window else { return }
+        let keyboard = convert(frame, from: window.screen.coordinateSpace)
+        keyboardOverlap = max(0, bounds.maxY - keyboard.minY)
+        syncZoom()
+        if keyboardOverlap > 0, let view = typing?.view {
+            canvas.scrollRectToVisible(view.convert(view.bounds, to: canvas).insetBy(dx: 0, dy: -24), animated: true)
+        }
     }
 
     private func syncZoom() {
@@ -631,7 +648,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         let inset = max(0, (canvas.bounds.width - size.width) / 2)
         // a page smaller than the view sits in the middle, not at the top
         let top = max(0, (canvas.bounds.height - size.height) / 2)
-        canvas.contentInset = UIEdgeInsets(top: top, left: inset, bottom: top, right: inset)
+        canvas.contentInset = UIEdgeInsets(top: top, left: inset, bottom: top + keyboardOverlap, right: inset)
         // sharper paper when zoomed, but only redrawn on real changes and capped to keep memory down
         let scale = min(traitCollection.displayScale * zoom, 3)
         if abs(scale - paper.contentScaleFactor) / scale > 0.15 {
@@ -770,6 +787,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         let button = UIButton(type: .custom)
         button.addSubview(label)
         label.isUserInteractionEnabled = false
+        // the pencil writes over text (or Scribbles into it with the text pen); fingers open its menu
+        button.tag = PassthroughView.pencilThroughTag
         if let sticky = box.sticky {
             // a square paper note with a soft shadow
             let inner = label.sizeThatFits(CGSize(width: Self.stickyWidth - 32, height: .greatestFiniteMagnitude))
@@ -1306,7 +1325,6 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         let editor = ShapeEditor(shape: shape)
         editor.onCommit = { [weak self] in self?.commitShape($0) }
         editor.onDelete = { [weak self] in
-            self?.inspector?.dismiss(animated: true)
             self?.editPage("Delete Shape") { page in page.shapes.removeAll { $0.id == id } }
             self?.deselectShape()
         }
@@ -1324,40 +1342,19 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         handleViews.forEach { $0.removeFromSuperview() }
         handleViews = []
         layoutKnobs()
-        if let inspector, inspector.presentingViewController != nil {
-            inspector.dismiss(animated: animated)
-        }
+        inspector?.close(animated: animated)
+        inspector = nil
     }
 
     private func presentInspector(for shape: ShapeItem, editor: ShapeEditor) {
-        // present from whatever is on top, unless something else is already showing there
-        guard var presenter = viewController else { return }
-        while let next = presenter.presentedViewController, !next.isBeingDismissed { presenter = next }
-        guard presenter.presentedViewController == nil || presenter.presentedViewController?.isBeingDismissed == true,
-              presenter.viewIfLoaded?.window != nil else { return }
-        let host = UIHostingController(rootView: ShapeInspector(editor: editor))
-        host.modalPresentationStyle = .popover
-        host.preferredContentSize = CGSize(width: 340, height: shape.kind == .projectile || shape.kind == .graph ? 620 : 470)
-        if let pop = host.popoverPresentationController {
-            pop.sourceView = self
-            let rect = overlay.convert(shape.bounds, to: self).intersection(bounds.insetBy(dx: 20, dy: 20))
-            let finite = !rect.isNull && rect.origin.x.isFinite && rect.origin.y.isFinite && rect.width.isFinite && rect.height.isFinite
-            pop.sourceRect = finite ? rect : CGRect(x: bounds.midX, y: bounds.midY, width: 1, height: 1)
-            pop.permittedArrowDirections = [.left, .right, .up, .down]
-            // the page stays live so handles can be dragged with the panel open
-            pop.passthroughViews = [self]
-            pop.delegate = self
-        }
-        presenter.present(host, animated: true)
-        inspector = host
-    }
-
-    func adaptivePresentationStyle(for controller: UIPresentationController, traitCollection: UITraitCollection) -> UIModalPresentationStyle {
-        .none
-    }
-
-    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-        deselectShape()
+        // floats on the top screen rather than presenting, so the shape stays draggable underneath
+        guard var top = window?.rootViewController else { return }
+        while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
+        let tall = shape.kind == .projectile || shape.kind == .graph
+        let panel = FloatingPanel(ShapeInspector(editor: editor), size: CGSize(width: 340, height: tall ? 620 : 470))
+        panel.onClose = { [weak self] in self?.deselectShape() }
+        panel.show(in: top, avoiding: overlay.convert(shape.bounds, to: top.view))
+        inspector = panel
     }
 
     private func commitShape(_ shape: ShapeItem) {
@@ -1809,10 +1806,24 @@ extension NoteCanvasView: UIIndirectScribbleInteractionDelegate {
 
     func indirectScribbleInteraction(_ interaction: UIInteraction, requestElementsIn rect: CGRect, completion: @escaping ([String]) -> Void) {
         guard InkTools.shared.writesText, mode == .draw, let page else { return completion([]) }
-        // existing text first, so writing over it goes into it; anywhere else starts a new box
+        // writing over existing text goes into it; a new box only where there's none, or the two fight
         var ids = page.textBoxes.filter { $0.anchor == nil }.map(\.id.uuidString)
         if let typing, typing.isNew { ids.insert(typing.box.id.uuidString, at: 0) }
-        completion(ids + [Self.newText])
+        let near = ids.filter { frame(of: $0)?.intersects(rect) == true }
+        completion(near.isEmpty ? [Self.newText] : near)
+    }
+
+    /// Where writing goes into a box: the box, plus room to carry on along the line and just below.
+    private func frame(of id: String) -> CGRect? {
+        let f: CGRect
+        if let typing, typing.box.id.uuidString == id {
+            f = typing.view.frame
+        } else if let box = page?.textBoxes.first(where: { $0.id.uuidString == id }), let view = boxViews[box.id] {
+            f = view.frame
+        } else {
+            return nil
+        }
+        return overlay.convert(CGRect(x: f.minX - 20, y: f.minY - 10, width: f.width + 260, height: f.height + 60), to: self)
     }
 
     func indirectScribbleInteraction(_ interaction: UIInteraction, isElementFocused elementIdentifier: String) -> Bool {
@@ -1823,13 +1834,7 @@ extension NoteCanvasView: UIIndirectScribbleInteractionDelegate {
         if elementIdentifier == Self.newText {
             return overlay.convert(overlay.bounds, to: self)
         }
-        if let typing, typing.box.id.uuidString == elementIdentifier {
-            // room to keep writing along the line and just below
-            let f = typing.view.frame
-            return overlay.convert(CGRect(x: f.minX - 20, y: f.minY - 10, width: f.width + 260, height: f.height + 60), to: self)
-        }
-        guard let box = page?.textBoxes.first(where: { $0.id.uuidString == elementIdentifier }), let view = boxViews[box.id] else { return .zero }
-        return overlay.convert(view.frame.insetBy(dx: -10, dy: -10), to: self)
+        return frame(of: elementIdentifier) ?? .zero
     }
 
     func indirectScribbleInteraction(_ interaction: UIInteraction, focusElementIfNeeded elementIdentifier: String, referencePoint focusReferencePoint: CGPoint,

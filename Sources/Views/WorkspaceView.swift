@@ -123,6 +123,8 @@ struct WorkspaceView: View {
             }
             .coordinateSpace(.named("workspace"))
         }
+        // the keyboard slides over the page instead of squashing it and its zoom
+        .ignoresSafeArea(.keyboard)
         .background(PencilInteractions(enabled: showsInk && !tools.systemPicker))
         .overlay(alignment: tools.atBottom ? .bottom : .top) {
             if showsInk {

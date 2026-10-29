@@ -138,7 +138,7 @@ final class NotebookStore {
         notebook.paper = style
         notebook.paperColor = color
         for i in notebook.pages.indices {
-            notebook.pages[i].paper = nil
+            notebook.pages[i].paper = notebook.pages[i].back == true ? .blank : nil
             notebook.pages[i].paperColor = nil
         }
         scheduleSave()
@@ -159,10 +159,66 @@ final class NotebookStore {
 
     /// New pages take the paper and size of the page they follow.
     func addPage(after index: Int) -> Int {
-        let at = min(index + 1, notebook.pages.count)
-        notebook.pages.insert(blankPage(like: notebook.pages.indices.contains(index) ? notebook.pages[index] : nil), at: at)
+        let at = insertionPoint(after: index)
+        let page = blankPage(like: front(of: index))
+        notebook.pages.insert(contentsOf: withBack(page), at: at)
         scheduleSave()
         return at
+    }
+
+    /// After a page and its back, so a new page never lands between them.
+    private func insertionPoint(after index: Int) -> Int {
+        let at = min(index + 1, notebook.pages.count)
+        return notebook.pages.indices.contains(at) && notebook.pages[at].back == true ? at + 1 : at
+    }
+
+    /// The page itself, or for a back the page it belongs to.
+    private func front(of index: Int) -> NotePage? {
+        guard notebook.pages.indices.contains(index) else { return nil }
+        if notebook.pages[index].back == true, index > 0 { return notebook.pages[index - 1] }
+        return notebook.pages[index]
+    }
+
+    private func withBack(_ page: NotePage) -> [NotePage] {
+        guard notebook.blankBacks == true else { return [page] }
+        var back = NotePage()
+        back.paper = .blank
+        back.paperColor = page.paperColor
+        back.size = page.size
+        back.back = true
+        return [page, back]
+    }
+
+    func setBlankBacks(_ on: Bool) {
+        notebook.blankBacks = on ? true : nil
+        if on {
+            var pages: [NotePage] = []
+            for (i, page) in notebook.pages.enumerated() {
+                pages.append(page)
+                let next = notebook.pages.indices.contains(i + 1) ? notebook.pages[i + 1] : nil
+                if page.back != true, next?.back != true { pages += withBack(page).dropFirst() }
+            }
+            notebook.pages = pages
+        } else {
+            // written-on backs stay as ordinary pages
+            notebook.pages = notebook.pages.compactMap { page in
+                guard page.back == true else { return page }
+                if isEmpty(page) {
+                    drawings.remove(page.id.uuidString)
+                    return nil
+                }
+                var kept = page
+                kept.back = nil
+                return kept
+            }
+        }
+        scheduleSave()
+    }
+
+    private func isEmpty(_ page: NotePage) -> Bool {
+        page.links.isEmpty && page.textBoxes.isEmpty && page.images.isEmpty && page.shapes.isEmpty
+            && page.checklists.isEmpty && page.voiceNotes.isEmpty && (page.folds ?? []).isEmpty
+            && drawings.drawing(page.id.uuidString).strokes.isEmpty
     }
 
     private func blankPage(like page: NotePage?) -> NotePage {
@@ -179,6 +235,10 @@ final class NotebookStore {
         guard notebook.pages.indices.contains(index) else { return 0 }
         let page = notebook.pages.remove(at: index)
         drawings.remove(page.id.uuidString)
+        // its blank back goes with it, unless something's been written there
+        if page.back != true, notebook.pages.indices.contains(index), notebook.pages[index].back == true, isEmpty(notebook.pages[index]) {
+            drawings.remove(notebook.pages.remove(at: index).id.uuidString)
+        }
         if notebook.pages.isEmpty { notebook.pages = [NotePage()] }
         scheduleSave()
         return min(index, notebook.pages.count - 1)
@@ -186,9 +246,8 @@ final class NotebookStore {
 
     // PDF pages
 
-    /// Copies the PDF in and adds a page per PDF page after `index`, each followed by
-    /// a blank page when interleaving. Returns the first new page's index.
-    func insertPDF(from source: URL, after index: Int, interleave: Bool) throws -> Int {
+    /// Copies the PDF in and adds a page per PDF page after `index`. Returns the first new page's index.
+    func insertPDF(from source: URL, after index: Int) throws -> Int {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let dir = folder.appending(path: "attachments", directoryHint: .isDirectory)
@@ -202,7 +261,6 @@ final class NotebookStore {
         }
         pdfs[file] = document
 
-        let template = notebook.pages.indices.contains(index) ? notebook.pages[index] : nil
         var added: [NotePage] = []
         for i in 0..<document.pageCount {
             guard let pdfPage = document.page(at: i) else { continue }
@@ -212,14 +270,9 @@ final class NotebookStore {
             let size = CGSize(width: 820, height: (820 * box.height / max(box.width, 1)).rounded())
             page.size = size
             page.background = PageBackground(file: file, page: i)
-            added.append(page)
-            if interleave {
-                var blank = blankPage(like: template)
-                blank.size = size
-                added.append(blank)
-            }
+            added += withBack(page)
         }
-        let at = min(index + 1, notebook.pages.count)
+        let at = insertionPoint(after: index)
         notebook.pages.insert(contentsOf: added, at: at)
         scheduleSave()
         return at
