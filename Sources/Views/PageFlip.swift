@@ -9,6 +9,7 @@ final class PageFlipView: UIView {
     private let forward: Bool
     /// How far the free edge gets pushed in before lifting (a stiff cover doesn't bow).
     private let push: CGFloat
+    private let sweep: Sweep
     private let stage = UIView()
     private var strips: [(holder: CATransformLayer, front: CALayer, back: CALayer, frontShade: CALayer, backShade: CALayer)] = []
     private var link: CADisplayLink?
@@ -19,13 +20,23 @@ final class PageFlipView: UIView {
     /// Share of the turn spent pushing the page into an arch.
     private static let pushPhase: CGFloat = 0.28
 
+    enum Sweep {
+        /// Right over to lie on the left, easing at both ends, like a book.
+        case over
+        /// A lone sheet lifts away past upright, gathering speed; coming back it slows to land.
+        case away
+    }
+    /// How far past upright a lone sheet goes before it's out of sight behind the hinge.
+    private static let awayLimit = CGFloat.pi / 2 + 0.12
+
     /// `front` faces up while the leaf lies right, `back` while it lies left (nil shows plain `backColor`).
     /// Forward turns go right to left, backward ones come back from the left.
     init(frame: CGRect, under: UIImage?, leaf: CGRect, front: UIImage?, back: UIImage?, backColor: UIColor,
-         forward: Bool, push: CGFloat = 0.2) {
+         forward: Bool, push: CGFloat = 0.2, sweep: Sweep = .over) {
         self.leaf = leaf
         self.forward = forward
         self.push = push
+        self.sweep = sweep
         super.init(frame: frame)
         isUserInteractionEnabled = false
         if let under {
@@ -35,7 +46,8 @@ final class PageFlipView: UIView {
         }
         stage.frame = bounds
         var perspective = CATransform3DIdentity
-        perspective.m34 = -1 / 1800
+        // farther away for bigger leaves, so a full-width page never swings into the viewer
+        perspective.m34 = -1 / (max(leaf.width, leaf.height, 400) * 2.4)
         stage.layer.sublayerTransform = perspective
         addSubview(stage)
 
@@ -86,20 +98,21 @@ final class PageFlipView: UIView {
         let p = Self.pushPhase
         var theta: CGFloat, inset: CGFloat, lag: CGFloat
         if progress < p {
-            theta = 0
+            theta = sweep == .away && !forward ? Self.awayLimit : (forward ? 0 : .pi)
             inset = push * w * progress / p
             lag = 0
         } else {
             let u = (progress - p) / (1 - p)
-            let eased = u * u * (3 - 2 * u)
-            theta = .pi * eased
+            switch sweep {
+            case .over:
+                let eased = u * u * (3 - 2 * u)
+                theta = forward ? .pi * eased : .pi * (1 - eased)
+            case .away:
+                theta = Self.awayLimit * (forward ? pow(u, 1.6) : pow(1 - u, 1.6))
+            }
             // the arch relaxes as the leaf lifts, and the free edge trails a little mid-air
             inset = push * w * (1 - u)
-            lag = w * 0.1 * sin(.pi * u)
-        }
-        if !forward {
-            theta = .pi - theta
-            lag = -lag
+            lag = w * 0.1 * sin(.pi * u) * (forward ? 1 : -1)
         }
         let span = w - inset
         let height = inset > 0.5 ? 2 * span / .pi * sqrt(max(w / span - 1, 0)) : 0

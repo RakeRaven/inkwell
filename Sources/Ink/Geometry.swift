@@ -4,7 +4,29 @@ import UIKit
 let cmPerPoint = 21.0 / 820.0
 
 extension ShapeItem {
-    var closed: Bool { kind == .polygon || kind == .ellipse }
+    var closed: Bool { kind == .polygon || kind == .ellipse || kind == .diagram }
+    /// Projectiles and graphs keep their axes level.
+    var turnable: Bool { kind != .projectile && kind != .graph }
+
+    /// A diagram's box corners, turned with it.
+    var box: [CGPoint] {
+        let c = points.first ?? .zero, r = radii ?? CGSize(width: 60, height: 60), a = CGFloat(rotation ?? 0)
+        return [(-1, -1), (1, -1), (1, 1), (-1, 1)].map { sx, sy in
+            let x = r.width * CGFloat(sx), y = r.height * CGFloat(sy)
+            return CGPoint(x: c.x + x * cos(a) - y * sin(a), y: c.y + x * sin(a) + y * cos(a))
+        }
+    }
+
+    /// On the line, or anywhere inside a closed shape.
+    func hit(_ p: CGPoint, reach: CGFloat) -> Bool {
+        if distance(to: p) < reach { return true }
+        guard closed, outline.count > 2 else { return false }
+        let path = UIBezierPath()
+        path.move(to: outline[0])
+        outline.dropFirst().forEach { path.addLine(to: $0) }
+        path.close()
+        return path.contains(p)
+    }
 
     /// A graph's plot area on the page.
     var graphFrame: CGRect {
@@ -13,7 +35,7 @@ extension ShapeItem {
 
     var center: CGPoint {
         switch kind {
-        case .ellipse, .projectile:
+        case .ellipse, .projectile, .diagram:
             return points.first ?? .zero
         default:
             let b = bounds
@@ -41,6 +63,8 @@ extension ShapeItem {
             let f = graphFrame
             return [CGPoint(x: f.minX, y: f.minY), CGPoint(x: f.maxX, y: f.minY), CGPoint(x: f.maxX, y: f.maxY),
                     CGPoint(x: f.minX, y: f.maxY), CGPoint(x: f.minX, y: f.minY)]
+        case .diagram:
+            return box + [box[0]]
         }
     }
 
@@ -86,6 +110,8 @@ extension ShapeItem {
             return [center, arrowTip]
         case .graph:
             return [CGPoint(x: graphFrame.maxX, y: graphFrame.maxY)]
+        case .diagram:
+            return []
         }
     }
 
@@ -117,6 +143,26 @@ extension ShapeItem {
         case .graph:
             let o = graphFrame.origin
             s.radii = CGSize(width: max(p.x - o.x, 160), height: max(p.y - o.y, 120))
+        case .diagram:
+            break
+        }
+        return s
+    }
+
+    /// Turned about its middle; level-only shapes stay as they are.
+    func rotated(by angle: CGFloat) -> ShapeItem {
+        var s = self
+        switch kind {
+        case .ellipse, .diagram:
+            s.rotation = (rotation ?? 0) + Double(angle)
+        case .polygon, .polyline, .line:
+            let c = center
+            s.points = points.map { p in
+                let dx = p.x - c.x, dy = p.y - c.y
+                return CGPoint(x: c.x + dx * cos(angle) - dy * sin(angle), y: c.y + dx * sin(angle) + dy * cos(angle))
+            }
+        case .projectile, .graph:
+            break
         }
         return s
     }
@@ -133,6 +179,8 @@ extension ShapeItem {
         switch kind {
         case .ellipse:
             s.radii = radii.map { CGSize(width: $0.width * k, height: $0.height * k) }
+        case .diagram:
+            s.radii = radii.map { CGSize(width: max($0.width * k, 20), height: max($0.height * k, 20)) }
         case .projectile:
             s.projectile?.scale = (projectile?.scale ?? 12) * Double(k)
         case .graph:
@@ -336,7 +384,23 @@ final class ShapeLayerView: UIView {
             drawGraph(shape, in: ctx)
             return
         }
+        if shape.kind == .diagram, let diagram = shape.diagram {
+            let c = shape.center, r = shape.radii ?? CGSize(width: 60, height: 60)
+            ctx.saveGState()
+            ctx.translateBy(x: c.x, y: c.y)
+            ctx.rotate(by: CGFloat(shape.rotation ?? 0))
+            DiagramRenderer.draw(diagram, in: CGRect(x: -r.width, y: -r.height, width: r.width * 2, height: r.height * 2),
+                                 color: color, width: shape.width, in: ctx)
+            ctx.restoreGState()
+            return
+        }
         stroke(shape.outline, color: color, width: shape.width, in: ctx)
+        if shape.arrow == true, shape.points.count >= 2, let tip = shape.points.last {
+            let from = shape.points[shape.points.count - 2]
+            let a = atan2(tip.y - from.y, tip.x - from.x), size = max(14, shape.width * 4)
+            stroke([CGPoint(x: tip.x - size * cos(a - 0.45), y: tip.y - size * sin(a - 0.45)), tip,
+                    CGPoint(x: tip.x - size * cos(a + 0.45), y: tip.y - size * sin(a + 0.45))], color: color, width: shape.width, in: ctx)
+        }
         guard shape.measures == true else { return }
         let label = Theme.uiAccent
         switch shape.kind {
@@ -379,7 +443,7 @@ final class ShapeLayerView: UIView {
             } else {
                 text(String(format: "a = %.1f cm  b = %.1f cm", Double(r.width) * cmPerPoint, Double(r.height) * cmPerPoint), at: c, color: label)
             }
-        case .projectile, .graph:
+        case .projectile, .graph, .diagram:
             break
         }
     }

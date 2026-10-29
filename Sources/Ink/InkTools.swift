@@ -4,6 +4,8 @@ import UIKit
 
 enum PenKind: String, Codable, CaseIterable, Identifiable {
     case fountain, ball, brush, pencil, highlighter, eraser, lasso
+    /// Writes typed text: Scribble reads the pencil, a finger tap opens the keyboard.
+    case text
 
     var id: String { rawValue }
 
@@ -16,6 +18,7 @@ enum PenKind: String, Codable, CaseIterable, Identifiable {
         case .highlighter: "Highlighter"
         case .eraser: "Eraser"
         case .lasso: "Lasso"
+        case .text: "Text Pen"
         }
     }
 
@@ -28,6 +31,7 @@ enum PenKind: String, Codable, CaseIterable, Identifiable {
         case .highlighter: "highlighter"
         case .eraser: "eraser"
         case .lasso: "lasso"
+        case .text: "character.textbox"
         }
     }
 
@@ -38,7 +42,7 @@ enum PenKind: String, Codable, CaseIterable, Identifiable {
         case .brush: .pen
         case .pencil: .pencil
         case .highlighter: .marker
-        case .eraser, .lasso: nil
+        case .eraser, .lasso, .text: nil
         }
     }
 
@@ -50,7 +54,7 @@ enum PenKind: String, Codable, CaseIterable, Identifiable {
         case .pencil: [1.5, 3, 6]
         case .highlighter: [10, 18, 30]
         case .eraser: [8, 20, 40]
-        case .lasso: []
+        case .lasso, .text: []
         }
     }
 
@@ -63,14 +67,14 @@ enum PenKind: String, Codable, CaseIterable, Identifiable {
         case .pencil: 0.5...16
         case .highlighter: 4...50
         case .eraser: 4...80
-        case .lasso: 1...1
+        case .lasso, .text: 1...1
         }
     }
 
     var defaultColors: [String] {
         switch self {
         case .highlighter: ["FFE45C", "8EF08A", "FF9ECF", "8CCBFF"]
-        case .eraser, .lasso: []
+        case .eraser, .lasso, .text: []
         default: ["1C1C1E", "1F4E9C", "C8322D", "2E8B57"]
         }
     }
@@ -171,13 +175,15 @@ final class InkTools {
         switch pen {
         case .eraser:
             return pixelEraser ? PKEraserTool(.bitmap, width: width) : PKEraserTool(.vector)
-        case .lasso:
+        case .lasso, .text:
             return PKLassoTool()
         default:
             let hex = s.colors.indices.contains(s.colorIndex) ? s.colors[s.colorIndex] : "000000"
             return PKInkingTool(pen.inkType ?? .pen, color: UIColor(hex: hex), width: width)
         }
     }
+
+    var writesText: Bool { pen == .text }
 
     func register(_ ink: InkController) {
         canvases.add(ink)

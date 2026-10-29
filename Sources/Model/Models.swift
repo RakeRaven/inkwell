@@ -215,11 +215,13 @@ enum LinkTarget: Codable, Hashable {
     case pdfPage(doc: UUID, page: Int)
     case epubChapter(doc: UUID, href: String)
     case web(url: String)
+    /// A recording in the notebook's media folder.
+    case voice(file: String)
 
     var docID: UUID? {
         switch self {
         case .pdfPage(let doc, _), .epubChapter(let doc, _): doc
-        case .web: nil
+        case .web, .voice: nil
         }
     }
 }
@@ -241,6 +243,45 @@ struct TextBox: Codable, Identifiable, Equatable {
     var fontSize: CGFloat = 28
     /// Set for calculated results: the point just right of the "=" they answer.
     var anchor: CGPoint?
+    /// Hex colour when the text sits on a sticky note.
+    var sticky: String?
+}
+
+/// A to-do list on the page; each line ticks off with a tap.
+struct Checklist: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var title: String
+    var items: [ChecklistItem]
+    var origin: CGPoint
+    var fontSize: CGFloat = 22
+}
+
+struct ChecklistItem: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var text: String
+    var done = false
+}
+
+/// A recording pinned to the page, played with a tap.
+struct VoiceNote: Codable, Identifiable, Equatable {
+    var id = UUID()
+    /// File in the notebook's media folder.
+    var file: String
+    var position: CGPoint
+    var duration: Double
+    var title: String
+}
+
+/// What the handwriting on a page says, for search.
+struct InkIndex: Codable, Equatable {
+    var lines: [InkLine]
+    /// Stroke count when it was read, so changed pages get read again.
+    var strokes: Int
+}
+
+struct InkLine: Codable, Equatable {
+    var text: String
+    var rect: CGRect
 }
 
 struct ImageBox: Codable, Identifiable, Equatable {
@@ -251,7 +292,71 @@ struct ImageBox: Codable, Identifiable, Equatable {
 }
 
 enum ShapeKind: String, Codable {
-    case polygon, polyline, line, ellipse, projectile, graph
+    case polygon, polyline, line, ellipse, projectile, graph, diagram
+}
+
+/// A ready-drawn science or computing figure, laid out in its box.
+struct Diagram: Codable, Equatable {
+    var type: DiagramType
+    /// Flowchart text, or a caption.
+    var label: String?
+    /// Atomic number, for Bohr models.
+    var element: Int?
+    var month: Int?
+    var year: Int?
+}
+
+enum DiagramType: String, Codable, CaseIterable, Identifiable {
+    case bohr, benzene
+    case animalCell, plantCell
+    case terminal, process, decision, data
+    case and, or, not, nand, nor, xor, xnor
+    case resistor, cell, battery, bulb, switchOpen, capacitor, diode, ammeter, voltmeter
+    case calendar
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bohr: "Bohr Model"
+        case .benzene: "Benzene Ring"
+        case .animalCell: "Animal Cell"
+        case .plantCell: "Plant Cell"
+        case .terminal: "Start / End"
+        case .process: "Process"
+        case .decision: "Decision"
+        case .data: "Input / Output"
+        case .and, .or, .not, .nand, .nor, .xor, .xnor: rawValue.uppercased() + " Gate"
+        case .resistor: "Resistor"
+        case .cell: "Cell"
+        case .battery: "Battery"
+        case .bulb: "Lamp"
+        case .switchOpen: "Switch"
+        case .capacitor: "Capacitor"
+        case .diode: "Diode"
+        case .ammeter: "Ammeter"
+        case .voltmeter: "Voltmeter"
+        case .calendar: "Calendar"
+        }
+    }
+
+    static let flowchart: [DiagramType] = [.terminal, .process, .decision, .data]
+    static let gates: [DiagramType] = [.and, .or, .not, .nand, .nor, .xor, .xnor]
+    static let circuit: [DiagramType] = [.cell, .battery, .resistor, .bulb, .switchOpen, .capacitor, .diode, .ammeter, .voltmeter]
+
+    /// Box size when inserted, in page points.
+    var size: CGSize {
+        switch self {
+        case .bohr: CGSize(width: 340, height: 380)
+        case .benzene: CGSize(width: 200, height: 200)
+        case .animalCell, .plantCell: CGSize(width: 600, height: 380)
+        case .decision: CGSize(width: 240, height: 150)
+        case .terminal, .process, .data: CGSize(width: 240, height: 100)
+        case .and, .or, .not, .nand, .nor, .xor, .xnor: CGSize(width: 220, height: 130)
+        case .resistor, .cell, .battery, .bulb, .switchOpen, .capacitor, .diode, .ammeter, .voltmeter: CGSize(width: 220, height: 110)
+        case .calendar: CGSize(width: 440, height: 400)
+        }
+    }
 }
 
 /// Functions of x plotted over a window.
@@ -291,6 +396,9 @@ struct ShapeItem: Codable, Identifiable, Equatable {
     var measures: Bool?
     var projectile: Projectile?
     var graph: GraphSpec?
+    /// Arrowhead at a line's last point.
+    var arrow: Bool?
+    var diagram: Diagram?
 }
 
 /// A page of an inserted PDF shown as the paper.
@@ -313,6 +421,9 @@ struct NotePage: Codable, Identifiable, Equatable {
     var background: PageBackground?
     /// Dog-eared corners; a page with any is bookmarked.
     var folds: [PageCorner]?
+    var checklists: [Checklist] = []
+    var voiceNotes: [VoiceNote] = []
+    var inkIndex: InkIndex?
 
     var bookmarked: Bool { !(folds ?? []).isEmpty }
 }
@@ -342,6 +453,9 @@ extension NotePage {
         size = try c.decodeIfPresent(CGSize.self, forKey: .size)
         background = try c.decodeIfPresent(PageBackground.self, forKey: .background)
         folds = try c.decodeIfPresent([PageCorner].self, forKey: .folds)
+        checklists = try c.decodeIfPresent([Checklist].self, forKey: .checklists) ?? []
+        voiceNotes = try c.decodeIfPresent([VoiceNote].self, forKey: .voiceNotes) ?? []
+        inkIndex = try c.decodeIfPresent(InkIndex.self, forKey: .inkIndex)
     }
 }
 

@@ -346,6 +346,10 @@ struct WorkspaceView: View {
             if let url = URL(string: address) { UIApplication.shared.open(url) }
             return
         }
+        if case .voice(let file) = link.target {
+            if let notes { VoicePlayer.shared.toggle(notes.audioURL(file)) }
+            return
+        }
         guard let doc = link.target.docID, let reader = openDocument(doc) else { return }
         switch link.target {
         case .pdfPage(_, let page):
@@ -356,7 +360,7 @@ struct WorkspaceView: View {
             if let i = reader.epub?.chapters.firstIndex(where: { $0.href == href }) {
                 reader.state.chapterIndex = i
             }
-        case .web:
+        case .web, .voice:
             break
         }
     }

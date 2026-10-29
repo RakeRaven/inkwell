@@ -30,6 +30,9 @@ final class NotesSession {
     var message: String?
     /// Plays once when the notebook opens.
     var opening: OpeningLeaves?
+    /// A recording under way, and what it will become.
+    var recordingVoice: VoicePurpose?
+    var searching = false
 
     init(store: NotebookStore) {
         self.store = store
@@ -125,6 +128,10 @@ struct NotebookPane: View {
                     }
                 }
                 Button("Web Link\u{2026}") { session.askingURL = true }
+                Button("Voice Note\u{2026}") {
+                    if let area = session.linkArea { session.recordingVoice = .link(area) }
+                    session.linkArea = nil
+                }
                 Button("Cancel", role: .cancel) { session.linkArea = nil }
             }
             .alert("Web Link", isPresented: $session.askingURL) {
@@ -133,6 +140,18 @@ struct NotebookPane: View {
                     .textInputAutocapitalization(.never)
                 Button("Add") { addWebLink() }
                 Button("Cancel", role: .cancel) { session.linkArea = nil }
+            }
+            .sheet(item: $session.recordingVoice) { purpose in
+                VoiceRecorderSheet { url, duration in
+                    guard let file = store.saveAudio(from: url) else { return }
+                    switch purpose {
+                    case .note: session.handle.view?.addVoiceNote(file: file, duration: duration)
+                    case .link(let area): session.handle.view?.addAreaLink(.voice(file: file), label: "Voice note", area: area)
+                    }
+                }
+            }
+            .sheet(isPresented: $session.searching) {
+                NotebookSearch(session: session, pageIndex: $pageIndex)
             }
             .photosPicker(isPresented: $session.pickingPhoto, selection: $session.photoItem, matching: .images)
             .onChange(of: session.photoItem) { _, item in
@@ -169,8 +188,8 @@ struct NotebookPane: View {
 
     private var hint: String? {
         switch session.mode {
-        case .draw: nil
-        case .convert: "Drag over handwriting to turn it into text"
+        case .draw: InkTools.shared.writesText ? "Write anywhere to type, or tap with a finger for the keyboard" : nil
+        case .convert: "Drag over handwriting to restyle it or turn it into text"
         case .link: "Drag over handwriting or text to link it"
         case .arrange: "Drag to move, pinch to resize, tap for options"
         }
@@ -219,8 +238,20 @@ struct NotebookControls: View {
                 }
             }
             modeButtons
+            Button { session.searching = true } label: { BarIcon("magnifyingglass") }
+                .accessibilityLabel("Search Notebook")
             Menu {
                 Button { session.handle.view?.beginNewText() } label: { Label("Text", systemImage: "textformat") }
+                Menu {
+                    ForEach(NoteCanvasView.stickyColors, id: \.1) { name, hex in
+                        Button(name) { session.handle.view?.addSticky(hex) }
+                    }
+                } label: {
+                    Label("Sticky Note", systemImage: "note.text")
+                }
+                Button { session.handle.view?.addChecklist() } label: { Label("To-Do List", systemImage: "checklist") }
+                Button { session.handle.view?.insertShape(.diagram(.calendar)) } label: { Label("Calendar", systemImage: "calendar") }
+                Button { session.recordingVoice = .note } label: { Label("Voice Note", systemImage: "waveform") }
                 Button { session.pickingPhoto = true } label: { Label("Image", systemImage: "photo") }
                 Menu {
                     Button { session.handle.view?.insertShape(.equilateral) } label: { Label("Equilateral Triangle", systemImage: "triangle") }
@@ -228,15 +259,40 @@ struct NotebookControls: View {
                     Button { session.handle.view?.insertShape(.square) } label: { Label("Square", systemImage: "square") }
                     Button { session.handle.view?.insertShape(.circle) } label: { Label("Circle", systemImage: "circle") }
                     Button { session.handle.view?.insertShape(.line) } label: { Label("Line", systemImage: "line.diagonal") }
+                    Button { session.handle.view?.insertShape(.arrow) } label: { Label("Arrow", systemImage: "arrow.right") }
                     Button { session.handle.view?.insertShape(.angle) } label: { Label("Angle", systemImage: "angle") }
+                    Button { session.handle.view?.insertShape(.graph) } label: { Label("Graph", systemImage: "chart.xyaxis.line") }
                 } label: {
-                    Label("Geometry", systemImage: "triangle")
+                    Label("Maths", systemImage: "function")
                 }
-                Button { session.handle.view?.insertShape(.graph) } label: {
-                    Label("Graph", systemImage: "chart.xyaxis.line")
+                Menu {
+                    Button { session.handle.view?.insertShape(.projectile) } label: {
+                        Label("Projectile", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                    }
+                    diagramButtons(DiagramType.circuit)
+                } label: {
+                    Label("Physics", systemImage: "bolt")
                 }
-                Button { session.handle.view?.insertShape(.projectile) } label: {
-                    Label("Projectile (Physics)", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                Menu {
+                    diagramButtons([.bohr, .benzene])
+                } label: {
+                    Label("Chemistry", systemImage: "atom")
+                }
+                Menu {
+                    diagramButtons([.animalCell, .plantCell])
+                } label: {
+                    Label("Biology", systemImage: "leaf")
+                }
+                Menu {
+                    Section("Flowchart") {
+                        diagramButtons(DiagramType.flowchart)
+                        Button { session.handle.view?.insertShape(.arrow) } label: { Text("Arrow") }
+                    }
+                    Section("Logic Gates") {
+                        diagramButtons(DiagramType.gates)
+                    }
+                } label: {
+                    Label("Computing", systemImage: "cpu")
                 }
                 Button {
                     session.interleave = false
@@ -278,6 +334,12 @@ struct NotebookControls: View {
         .buttonStyle(.plain)
     }
 
+    private func diagramButtons(_ types: [DiagramType]) -> some View {
+        ForEach(types) { type in
+            Button(type.title) { session.handle.view?.insertShape(.diagram(type)) }
+        }
+    }
+
     /// Folded corners are bookmarks; this lists them and folds or unfolds the current page.
     private var bookmarks: some View {
         let page = pages[index]
@@ -309,7 +371,7 @@ struct NotebookControls: View {
     @ViewBuilder
     private var modeButtons: some View {
         let modes: [(CanvasMode, String, String)] = [
-            (.convert, "text.viewfinder", "Handwriting to Text"),
+            (.convert, "text.viewfinder", "Select Handwriting"),
             (.link, "link", "Link Handwriting or Text"),
             (.arrange, "arrow.up.and.down.and.arrow.left.and.right", "Move & Resize"),
         ]

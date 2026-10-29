@@ -38,8 +38,15 @@ struct ShapeInspector: View {
                 case .ellipse: ellipse
                 case .projectile: projectile
                 case .graph: graph
+                case .diagram: diagram
                 }
-                if shape.kind != .projectile, shape.kind != .graph {
+                if shape.kind == .line || shape.kind == .polyline {
+                    Toggle("Arrowhead", isOn: Binding(get: { shape.arrow ?? false }, set: { on in
+                        editor.apply { var s = $0; s.arrow = on ? true : nil; return s }
+                    }))
+                    .font(.system(size: 15, weight: .semibold))
+                }
+                if shape.kind != .projectile, shape.kind != .graph, shape.kind != .diagram {
                     Toggle("Show Measurements", isOn: Binding(get: { shape.measures ?? false }, set: { on in
                         editor.apply { var s = $0; s.measures = on; return s }
                     }))
@@ -69,14 +76,79 @@ struct ShapeInspector: View {
             default: "Polygon"
             }
         case .polyline: "Angle"
-        case .line: "Line"
+        case .line: shape.arrow == true ? "Arrow" : "Line"
         case .ellipse: (shape.radii.map { abs($0.width - $0.height) < 0.5 } ?? false) ? "Circle" : "Ellipse"
         case .projectile: "Projectile"
         case .graph: "Graph"
+        case .diagram: shape.diagram?.type.title ?? "Diagram"
         }
     }
 
     // Kinds
+
+    private var diagram: some View {
+        let d = shape.diagram ?? Diagram(type: .process)
+        return VStack(alignment: .leading, spacing: 12) {
+            if d.type == .bohr {
+                sectionTitle("Element")
+                Picker("Element", selection: Binding(get: { d.element ?? 6 }, set: { z in setDiagram { $0.element = z } })) {
+                    ForEach(Array(Elements.range), id: \.self) { z in
+                        Text("\(z)  \(Elements.symbol(z))  \(Elements.name(z))").tag(z)
+                    }
+                }
+                .pickerStyle(.menu)
+                let z = d.element ?? 6
+                Text("\(z) protons, \(Elements.mass(z) - z) neutrons, shells \(Elements.shells(z).map(String.init).joined(separator: ", "))")
+                    .font(.caption)
+                    .foregroundStyle(Theme.muted)
+            }
+            if DiagramType.flowchart.contains(d.type) {
+                sectionTitle("Text")
+                TextField("Text", text: Binding(get: { d.label ?? "" }, set: { text in setDiagram { $0.label = text } }), axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                typePicker(DiagramType.flowchart, current: d.type)
+            }
+            if DiagramType.gates.contains(d.type) {
+                sectionTitle("Gate")
+                typePicker(DiagramType.gates, current: d.type)
+            }
+            if DiagramType.circuit.contains(d.type) {
+                sectionTitle("Component")
+                typePicker(DiagramType.circuit, current: d.type)
+            }
+            if d.type == .calendar {
+                let now = Calendar.current.dateComponents([.year, .month], from: Date())
+                sectionTitle("Month")
+                Picker("Month", selection: Binding(get: { d.month ?? now.month ?? 1 }, set: { m in setDiagram { $0.month = m } })) {
+                    ForEach(1...12, id: \.self) { Text(DateFormatter().monthSymbols[$0 - 1]).tag($0) }
+                }
+                .pickerStyle(.menu)
+                Stepper("Year \(String(d.year ?? now.year ?? 2026))", value: Binding(get: { d.year ?? now.year ?? 2026 }, set: { y in setDiagram { $0.year = y } }), in: 1900...2200)
+                    .font(.system(size: 15, weight: .semibold))
+            }
+            Text("Drag the round knobs to resize and turn it.")
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func typePicker(_ types: [DiagramType], current: DiagramType) -> some View {
+        Picker("Type", selection: Binding(get: { current }, set: { type in setDiagram { $0.type = type } })) {
+            ForEach(types) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.menu)
+    }
+
+    private func setDiagram(_ edit: @escaping (inout Diagram) -> Void) {
+        editor.apply { shape in
+            var s = shape
+            if var d = s.diagram {
+                edit(&d)
+                s.diagram = d
+            }
+            return s
+        }
+    }
 
     private var triangle: some View {
         VStack(alignment: .leading, spacing: 12) {

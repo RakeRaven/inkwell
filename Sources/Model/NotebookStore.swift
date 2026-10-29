@@ -16,6 +16,9 @@ final class NotebookStore {
     @ObservationIgnored private var pendingSave: DispatchWorkItem?
     @ObservationIgnored private var images: [String: UIImage] = [:]
     @ObservationIgnored private var pdfs: [String: PDFDocument] = [:]
+    @ObservationIgnored private var pendingIndex: [UUID: DispatchWorkItem] = [:]
+    /// Pages whose handwriting is being read right now.
+    private(set) var reading: Set<UUID> = []
 
     init(item: LibraryItem, library: Library) {
         let folder = library.folder(for: item)
@@ -45,6 +48,76 @@ final class NotebookStore {
 
     func setDrawing(_ drawing: PKDrawing, for page: UUID) {
         drawings.set(drawing, for: page.uuidString)
+        // read the handwriting again once writing pauses
+        pendingIndex[page]?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.readInk(of: page) }
+        pendingIndex[page] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    // Search
+
+    /// Reads a page's handwriting into its search index, unless it's already current.
+    func readInk(of pageID: UUID, completion: @escaping () -> Void = {}) {
+        guard let page = notebook.pages.first(where: { $0.id == pageID }), !reading.contains(pageID) else { return completion() }
+        let drawing = drawing(for: pageID)
+        let count = drawing.strokes.count
+        guard page.inkIndex?.strokes != count else { return completion() }
+        guard count > 0 else {
+            update(pageID) { $0.inkIndex = InkIndex(lines: [], strokes: 0) }
+            return completion()
+        }
+        let size = notebook.size(of: page)
+        var image = UIImage()
+        // dark ink on white reads best, whatever the paper
+        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+            let ink = drawing.image(from: CGRect(origin: .zero, size: size), scale: 1.5)
+            image = UIGraphicsImageRenderer(size: size).image { context in
+                UIColor.white.setFill()
+                context.fill(CGRect(origin: .zero, size: size))
+                ink.draw(in: CGRect(origin: .zero, size: size))
+            }
+        }
+        reading.insert(pageID)
+        HandwritingRecognizer.lines(in: image) { [weak self] found in
+            guard let self else { return }
+            self.reading.remove(pageID)
+            let lines = found.map { text, box in
+                InkLine(text: text, rect: CGRect(x: box.minX * size.width, y: (1 - box.maxY) * size.height,
+                                                 width: box.width * size.width, height: box.height * size.height))
+            }
+            self.update(pageID) { $0.inkIndex = InkIndex(lines: lines, strokes: count) }
+            completion()
+        }
+    }
+
+    /// Reads every page that has changed since it was last read, one after another.
+    func readAllInk(completion: @escaping () -> Void = {}) {
+        let stale = notebook.pages.filter { $0.inkIndex?.strokes != drawing(for: $0.id).strokes.count }.map(\.id)
+        func next(_ i: Int) {
+            guard i < stale.count else { return completion() }
+            readInk(of: stale[i]) { next(i + 1) }
+        }
+        next(0)
+    }
+
+    // Voice notes
+
+    /// Moves a recording into the notebook and returns its file name.
+    func saveAudio(from source: URL) -> String? {
+        let dir = folder.appending(path: "media", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = "\(UUID().uuidString).m4a"
+        do {
+            try FileManager.default.moveItem(at: source, to: dir.appending(path: file))
+        } catch {
+            return nil
+        }
+        return file
+    }
+
+    func audioURL(_ file: String) -> URL {
+        folder.appending(path: "media/\(file)")
     }
 
     func update(_ pageID: UUID, _ change: (inout NotePage) -> Void) {

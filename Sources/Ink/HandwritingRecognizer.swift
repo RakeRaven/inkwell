@@ -11,6 +11,9 @@ enum HandwritingRecognizer {
         DispatchQueue.global(qos: .userInitiated).async {
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
+            // the newest model reads handwriting best
+            request.revision = VNRecognizeTextRequest.currentRevision
+            request.automaticallyDetectsLanguage = true
             request.usesLanguageCorrection = !forMath
             try? VNImageRequestHandler(cgImage: cgImage).perform([request])
             let results = request.results ?? []
@@ -21,6 +24,25 @@ enum HandwritingRecognizer {
                 texts = [HandwritingRecognizer.join(results, forMath: forMath)].filter { !$0.isEmpty }
             }
             DispatchQueue.main.async { completion(texts) }
+        }
+    }
+
+    /// Every line of writing with its box (Vision's normalized, bottom-left origin), for search.
+    static func lines(in image: UIImage, completion: @escaping ([(String, CGRect)]) -> Void) {
+        guard let cgImage = image.cgImage else { return completion([]) }
+        DispatchQueue.global(qos: .utility).async {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            // the newest model reads handwriting best
+            request.revision = VNRecognizeTextRequest.currentRevision
+            request.automaticallyDetectsLanguage = true
+            request.usesLanguageCorrection = true
+            try? VNImageRequestHandler(cgImage: cgImage).perform([request])
+            let found = (request.results ?? []).compactMap { observation -> (String, CGRect)? in
+                guard let text = observation.topCandidates(1).first?.string, !text.isEmpty else { return nil }
+                return (text, observation.boundingBox)
+            }
+            DispatchQueue.main.async { completion(found) }
         }
     }
 

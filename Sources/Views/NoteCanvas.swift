@@ -6,7 +6,7 @@ import UIKit
 /// What a finger or pencil does on the page besides drawing.
 enum CanvasMode {
     case draw
-    /// Drag a box over handwriting to turn it into text.
+    /// Drag a box over handwriting to restyle it or turn it into text.
     case convert
     /// Drag a box over handwriting or text to link it.
     case link
@@ -16,7 +16,8 @@ enum CanvasMode {
 
 /// Ready-made shapes for the insert menu.
 enum ShapePreset {
-    case equilateral, rightTriangle, square, circle, line, angle, projectile, graph
+    case equilateral, rightTriangle, square, circle, line, arrow, angle, projectile, graph
+    case diagram(DiagramType)
 }
 
 /// Lets toolbar actions reach the live canvas (e.g. to place things where the user is looking).
@@ -50,7 +51,7 @@ struct NoteCanvas: UIViewRepresentable {
 }
 
 /// One notebook page: paper, pictures, ink, and an overlay of text boxes and links, all zooming together.
-final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPresentationControllerDelegate {
+final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPresentationControllerDelegate, UITextViewDelegate {
     var onDrawingChange: ((PKDrawing) -> Void)?
     var onEditPage: (((inout NotePage) -> Void) -> Void)?
     var onLinkTap: ((NoteLink) -> Void)?
@@ -66,7 +67,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             for gesture in [arrangePan, arrangePinch, arrangeTap] as [UIGestureRecognizer] {
                 gesture.isEnabled = mode == .arrange
             }
-            canvas.drawingGestureRecognizer.isEnabled = mode == .draw
+            applyDrawing()
             // arranging keeps two-finger scrolling; one finger moves things
             canvas.panGestureRecognizer.minimumNumberOfTouches = mode == .arrange ? 2 : 1
             overlay.isUserInteractionEnabled = mode != .arrange
@@ -83,6 +84,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             // book pages are paper edge to edge, and a spread's blank end page stays white
             backgroundColor = bookMode ? .clear : Theme.uiPaper
             spine.isHidden = !bookMode
+            // books curl from the corners, so folding one starts with a hold
+            cornerPull.isEnabled = !bookMode
+            cornerHold.isEnabled = bookMode
             // the whole book shrinks when zooming out, never one page inside its half
             canvas.bouncesZoom = !bookMode
             applyScrolling()
@@ -100,6 +104,17 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     private let foldView = FoldView()
     private lazy var cornerPress = UILongPressGestureRecognizer(target: self, action: #selector(cornerPressed(_:)))
     private lazy var cornerPull = UIPanGestureRecognizer(target: self, action: #selector(cornerPulled(_:)))
+    private lazy var cornerHold = UILongPressGestureRecognizer(target: self, action: #selector(cornerPulled(_:)))
+    private lazy var typeTap = UITapGestureRecognizer(target: self, action: #selector(typeTapped(_:)))
+    /// Text being typed or written in place, and whether it's a new box.
+    private var typing: (view: UITextView, box: TextBox, isNew: Bool)?
+    private var checklistViews: [UUID: UIView] = [:]
+    private var voiceViews: [UUID: UIView] = [:]
+    private var rotateKnob: UIView?
+    private var scaleKnob: UIView?
+    /// Handwriting picked out in select mode, waiting on the menu.
+    private var inkSelection: CGRect?
+    var audioURL: ((String) -> URL)?
     private let cornerGate = FoldGate()
     /// The corner being pulled, where the finger last settled, and whether holding still there has made it a bookmark.
     private var pull: (corner: PageCorner, rest: CGPoint, armed: Bool, still: DispatchWorkItem?)?
@@ -152,12 +167,13 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     }
 
     /// Pull a corner over by hand; hold it still to keep the fold as a bookmark, or let go and it falls back.
-    @objc private func cornerPulled(_ gesture: UIPanGestureRecognizer) {
+    @objc private func cornerPulled(_ gesture: UIGestureRecognizer) {
         let point = gesture.location(in: overlay)
         switch gesture.state {
         case .began:
-            let t = gesture.translation(in: overlay)
+            let t = (gesture as? UIPanGestureRecognizer)?.translation(in: overlay) ?? .zero
             guard let corner = corner(at: CGPoint(x: point.x - t.x, y: point.y - t.y)) else { return }
+            if gesture === cornerHold { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
             pull = (corner, point, false, nil)
             fallthrough
         case .changed:
@@ -279,7 +295,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     private var menuItem: Item?
 
     private enum Item: Equatable {
-        case text(UUID), link(UUID), image(UUID), shape(UUID)
+        case text(UUID), link(UUID), image(UUID), shape(UUID), checklist(UUID), voice(UUID)
     }
 
     override init(frame: CGRect) {
@@ -308,7 +324,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         // pull a page corner over to fold it; holding a folded one flattens it
         cornerPress.minimumPressDuration = 0.45
         cornerPull.maximumNumberOfTouches = 1
-        for gesture in [cornerPress, cornerPull] as [UIGestureRecognizer] {
+        cornerHold.minimumPressDuration = 0.3
+        cornerHold.isEnabled = false
+        for gesture in [cornerPress, cornerPull, cornerHold] as [UIGestureRecognizer] {
             gesture.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
             gesture.delegate = cornerGate
             canvas.addGestureRecognizer(gesture)
@@ -323,6 +341,15 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             guard let corner = self.corner(at: point) else { return false }
             let folded = (self.page?.folds ?? []).contains(corner)
             return gesture === self.cornerPress ? folded : !folded
+        }
+
+        // the text pen: tap to type, or write and Scribble turns it into text
+        typeTap.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+        typeTap.isEnabled = false
+        canvas.addGestureRecognizer(typeTap)
+        addInteraction(UIIndirectScribbleInteraction(delegate: self))
+        NotificationCenter.default.addObserver(forName: VoicePlayer.changed, object: nil, queue: .main) { [weak self] _ in
+            self?.rebuildOverlay()
         }
 
         selectionLayer.fillColor = Theme.uiAccent.withAlphaComponent(0.08).cgColor
@@ -353,7 +380,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
                 return self.shape(at: point) != nil || self.selectedShape != nil
             }
             guard let id = self.selectedShape, let shape = self.page?.shapes.first(where: { $0.id == id }) else { return false }
-            return shape.distance(to: point) < 24
+            return shape.hit(point, reach: self.reach)
         }
 
         // one finger turns pages when fingers don't draw, two fingers when they do
@@ -382,7 +409,10 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         }
         ink.onScroll = { [weak self] in self?.reportBookZoom() }
         ink.onScrollEnd = { [weak self] in self?.reportBookZoom(settled: true) }
-        ink.onToolsChanged = { [weak self] in self?.shareRulerScale() }
+        ink.onToolsChanged = { [weak self] in
+            self?.shareRulerScale()
+            self?.applyDrawing()
+        }
         ink.adjustStroke = { [weak self] stroke in
             guard let self, InkTools.shared.ruler else { return nil }
             return RulerView.shared?.straightened(stroke, in: self.overlay)
@@ -473,7 +503,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         guard !sheet.isNull, sheet.width > 1 else { return cover.removeFromSuperview() }
         let flip = PageFlipView(frame: bounds, under: forward ? new : old, leaf: sheet,
                                 front: PageFlipView.crop(forward ? old : new, to: sheet),
-                                back: nil, backColor: paper.color.fill, forward: forward)
+                                back: nil, backColor: paper.color.fill, forward: forward, push: forward ? 0.12 : 0, sweep: .away)
         addSubview(flip)
         cover.removeFromSuperview()
         flip.animate(to: 1, duration: 0.62) { [weak flip] in flip?.removeFromSuperview() }
@@ -487,20 +517,59 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         onLinkTap = onOpenLink
         self.onLinkArea = onLinkArea
         imageProvider = { [store] in store.image($0) }
+        audioURL = { [store] in store.audioURL($0) }
         let notebook = store.notebook
         show(page, paper: notebook.style(of: page), color: notebook.color(of: page), size: notebook.size(of: page),
              background: page.background.flatMap { store.pdfPage(for: $0) }) { store.drawing(for: id) }
     }
 
     func beginNewText() {
-        guard let presenter = viewController else { return }
         let origin = visibleCenter()
-        TextBoxEditor.present(from: presenter, text: "", title: "New Text") { [weak self] text in
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            let box = TextBox(text: trimmed, origin: CGPoint(x: max(origin.x - 160, 20), y: origin.y), fontSize: 24)
-            self?.editPage("Add Text") { $0.textBoxes.append(box) }
-        }
+        beginTyping(TextBox(text: "", origin: CGPoint(x: max(origin.x - 160, 20), y: origin.y), fontSize: 24), isNew: true)
+    }
+
+    func addSticky(_ color: String) {
+        let c = visibleCenter()
+        beginTyping(TextBox(text: "", origin: CGPoint(x: c.x - 120, y: c.y - 110), fontSize: 22, sticky: color), isNew: true)
+    }
+
+    func addChecklist() {
+        let c = visibleCenter()
+        let list = Checklist(title: "To Do", items: [], origin: CGPoint(x: c.x - 180, y: c.y - 80))
+        editChecklist(list, isNew: true)
+    }
+
+    func addVoiceNote(file: String, duration: TimeInterval) {
+        let note = VoiceNote(file: file, position: visibleCenter(), duration: duration,
+                             title: "Voice note " + Date().formatted(date: .omitted, time: .shortened))
+        editPage("Add Voice Note") { $0.voiceNotes.append(note) }
+    }
+
+    /// Picks something out briefly, for search results.
+    func flash(_ rect: CGRect) {
+        let target = overlay.convert(rect.insetBy(dx: -30, dy: -60), to: canvas)
+        canvas.scrollRectToVisible(target, animated: true)
+        let mark = CAShapeLayer()
+        mark.path = UIBezierPath(roundedRect: rect.insetBy(dx: -6, dy: -4), cornerRadius: 6).cgPath
+        mark.fillColor = Theme.uiAccent.withAlphaComponent(0.28).cgColor
+        overlay.layer.addSublayer(mark)
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0
+        fade.beginTime = CACurrentMediaTime() + 1.4
+        fade.duration = 0.8
+        fade.fillMode = .forwards
+        fade.isRemovedOnCompletion = false
+        mark.add(fade, forKey: "fade")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { mark.removeFromSuperlayer() }
+    }
+
+    /// Pen strokes while drawing; with the text pen the pencil writes text instead.
+    private func applyDrawing() {
+        let text = InkTools.shared.writesText
+        canvas.drawingGestureRecognizer.isEnabled = mode == .draw && !text
+        typeTap.isEnabled = mode == .draw && text
+        if !text, typing != nil, mode == .draw, !(typing?.view.isFirstResponder ?? false) { endTyping() }
     }
 
     func addLink(_ target: LinkTarget, label: String) {
@@ -618,8 +687,11 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     // Overlay
 
     private func rebuildOverlay() {
-        overlay.subviews.forEach { $0.removeFromSuperview() }
+        // the box being typed in stays put, or the keyboard would drop
+        overlay.subviews.filter { $0 !== typing?.view }.forEach { $0.removeFromSuperview() }
         media.subviews.forEach { $0.removeFromSuperview() }
+        checklistViews.removeAll()
+        voiceViews.removeAll()
         boxViews.removeAll()
         linkViews.removeAll()
         imageViews.removeAll()
@@ -649,18 +721,29 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             imageViews[image.id] = view
             media.addSubview(view)
         }
-        for box in page.textBoxes {
+        for box in page.textBoxes where box.id != typing?.box.id {
             let view = textBoxView(box)
             boxViews[box.id] = view
             overlay.addSubview(view)
         }
+        for list in page.checklists {
+            let view = checklistView(list)
+            checklistViews[list.id] = view
+            overlay.addSubview(view)
+        }
+        for note in page.voiceNotes {
+            let view = voiceChip(note)
+            voiceViews[note.id] = view
+            overlay.addSubview(view)
+        }
+        if let typing { overlay.bringSubviewToFront(typing.view) }
         for link in page.links {
             let view = link.area == nil ? linkChip(link) : areaLink(link)
             linkViews[link.id] = view
             overlay.addSubview(view)
         }
         if mode == .arrange {
-            for view in Array(boxViews.values) + Array(linkViews.values) {
+            for view in Array(boxViews.values) + Array(linkViews.values) + Array(checklistViews.values) + Array(voiceViews.values) {
                 view.layer.borderColor = Theme.uiAccent.withAlphaComponent(0.6).cgColor
                 view.layer.borderWidth = 1.5
             }
@@ -683,18 +766,30 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             let font = UIFont(name: "Noteworthy-Light", size: box.fontSize) ?? .systemFont(ofSize: box.fontSize)
             label.attributedText = NSAttributedString(string: box.text, attributes: [.font: font, .foregroundColor: Theme.uiAccent])
         } else {
-            label.attributedText = Markdown.render(box.text, size: box.fontSize, color: inkColor)
+            label.attributedText = Markdown.render(box.text, size: box.fontSize, color: box.sticky == nil ? inkColor : .black)
         }
-        let size = label.sizeThatFits(CGSize(width: min(560, pageSize.width - 40), height: .greatestFiniteMagnitude))
-        label.frame = CGRect(origin: .zero, size: size)
-        label.isUserInteractionEnabled = false
-
         let button = UIButton(type: .custom)
         button.addSubview(label)
-        if let anchor = box.anchor {
-            button.frame = CGRect(x: anchor.x, y: anchor.y - size.height / 2, width: size.width, height: size.height)
+        label.isUserInteractionEnabled = false
+        if let sticky = box.sticky {
+            // a square paper note with a soft shadow
+            let inner = label.sizeThatFits(CGSize(width: Self.stickyWidth - 32, height: .greatestFiniteMagnitude))
+            label.frame = CGRect(x: 16, y: 16, width: Self.stickyWidth - 32, height: inner.height)
+            button.frame = CGRect(origin: box.origin, size: CGSize(width: Self.stickyWidth, height: max(Self.stickyWidth * 0.86, inner.height + 32)))
+            button.backgroundColor = UIColor(hex: sticky)
+            button.layer.cornerRadius = 3
+            button.layer.shadowColor = UIColor.black.cgColor
+            button.layer.shadowOpacity = 0.2
+            button.layer.shadowRadius = 6
+            button.layer.shadowOffset = CGSize(width: 0, height: 4)
         } else {
-            button.frame = CGRect(origin: box.origin, size: size)
+            let size = label.sizeThatFits(CGSize(width: min(560, pageSize.width - 40), height: .greatestFiniteMagnitude))
+            label.frame = CGRect(origin: .zero, size: size)
+            if let anchor = box.anchor {
+                button.frame = CGRect(x: anchor.x, y: anchor.y - size.height / 2, width: size.width, height: size.height)
+            } else {
+                button.frame = CGRect(origin: box.origin, size: size)
+            }
         }
 
         var actions: [UIMenuElement] = [
@@ -704,6 +799,16 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         ]
         if box.anchor == nil {
             actions.append(UIAction(title: "Edit", image: UIImage(systemName: "pencil")) { [weak self] _ in self?.edit(box) })
+            actions.append(UIAction(title: "Edit as Markdown", image: UIImage(systemName: "text.badge.star")) { [weak self] _ in self?.editMarkdown(box) })
+            if box.sticky != nil {
+                actions.append(UIMenu(title: "Colour", image: UIImage(systemName: "paintpalette"), children: Self.stickyColors.map { name, hex in
+                    UIAction(title: name, state: box.sticky == hex ? .on : .off) { [weak self] _ in
+                        self?.editPage("Note Colour") { page in
+                            if let i = page.textBoxes.firstIndex(where: { $0.id == box.id }) { page.textBoxes[i].sticky = hex }
+                        }
+                    }
+                }))
+            }
             actions.append(UIAction(title: "Link This Text", image: UIImage(systemName: "link")) { [weak self, weak button] _ in
                 guard let frame = button?.frame else { return }
                 self?.onLinkArea?(frame)
@@ -719,12 +824,23 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         })
         button.menu = UIMenu(children: actions)
         button.showsMenuAsPrimaryAction = true
+        // the text pen taps straight through to type
+        button.isUserInteractionEnabled = !InkTools.shared.writesText
         return button
     }
 
+    static let stickyWidth: CGFloat = 240
+    static let stickyColors: [(String, String)] = [("Yellow", "FFE98A"), ("Pink", "FFC6DA"), ("Blue", "C4E4FF"), ("Green", "CDEFC4"), ("Lilac", "E2D4FF")]
+
     private func linkChip(_ link: NoteLink) -> UIView {
         var config = UIButton.Configuration.filled()
-        config.image = UIImage(systemName: link.target.docID == nil ? "safari" : "link")
+        let symbol: String
+        switch link.target {
+        case .web: symbol = "safari"
+        case .voice: symbol = "waveform"
+        default: symbol = "link"
+        }
+        config.image = UIImage(systemName: symbol)
         config.imagePadding = 4
         config.title = link.label
         config.cornerStyle = .capsule
@@ -774,6 +890,10 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     }
 
     private func edit(_ box: TextBox) {
+        beginTyping(box, isNew: false)
+    }
+
+    private func editMarkdown(_ box: TextBox) {
         guard let presenter = viewController else { return }
         TextBoxEditor.present(from: presenter, text: box.text, title: "Edit Text") { [weak self] text in
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -790,6 +910,12 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         guard let page else { return nil }
         for link in page.links.reversed() where linkViews[link.id]?.frame.insetBy(dx: -8, dy: -8).contains(point) == true {
             return .link(link.id)
+        }
+        for note in page.voiceNotes.reversed() where voiceViews[note.id]?.frame.insetBy(dx: -8, dy: -8).contains(point) == true {
+            return .voice(note.id)
+        }
+        for list in page.checklists.reversed() where checklistViews[list.id]?.frame.insetBy(dx: -8, dy: -8).contains(point) == true {
+            return .checklist(list.id)
         }
         for box in page.textBoxes.reversed() where box.anchor == nil && boxViews[box.id]?.frame.insetBy(dx: -8, dy: -8).contains(point) == true {
             return .text(box.id)
@@ -808,6 +934,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         case .text(let id): boxViews[id]
         case .link(let id): linkViews[id]
         case .image(let id): imageViews[id]
+        case .checklist(let id): checklistViews[id]
+        case .voice(let id): voiceViews[id]
         case .shape: nil
         }
     }
@@ -851,6 +979,16 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
                     if let i = page.shapes.firstIndex(where: { $0.id == id }) {
                         page.shapes[i] = page.shapes[i].translated(by: CGSize(width: dx, height: dy))
                     }
+                case .checklist(let id):
+                    if let i = page.checklists.firstIndex(where: { $0.id == id }) {
+                        page.checklists[i].origin.x += dx
+                        page.checklists[i].origin.y += dy
+                    }
+                case .voice(let id):
+                    if let i = page.voiceNotes.firstIndex(where: { $0.id == id }) {
+                        page.voiceNotes[i].position.x += dx
+                        page.voiceNotes[i].position.y += dy
+                    }
                 }
             }
             shapesView.preview = nil
@@ -866,6 +1004,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         case .began:
             pinching = item(at: gesture.location(in: overlay))
             if case .link = pinching { pinching = nil }
+            if case .voice = pinching { pinching = nil }
         case .changed:
             guard let pinching else { return }
             if case .shape(let id) = pinching {
@@ -893,7 +1032,11 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
                     if let i = page.shapes.firstIndex(where: { $0.id == id }) {
                         page.shapes[i] = page.shapes[i].scaled(by: scale)
                     }
-                case .link:
+                case .checklist(let id):
+                    if let i = page.checklists.firstIndex(where: { $0.id == id }) {
+                        page.checklists[i].fontSize = min(max(page.checklists[i].fontSize * scale, 12), 60)
+                    }
+                case .link, .voice:
                     break
                 }
             }
@@ -912,6 +1055,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     }
 
     func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration, suggestedActions: [UIMenuElement]) -> UIMenu? {
+        if let rect = inkSelection { return inkMenu(rect) }
         guard let item = menuItem else { return nil }
         var actions: [UIMenuElement] = []
         if case .text(let id) = item, let box = page?.textBoxes.first(where: { $0.id == id }) {
@@ -930,6 +1074,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
                 case .link(let id): page.links.removeAll { $0.id == id }
                 case .image(let id): page.images.removeAll { $0.id == id }
                 case .shape(let id): page.shapes.removeAll { $0.id == id }
+                case .checklist(let id): page.checklists.removeAll { $0.id == id }
+                case .voice(let id): page.voiceNotes.removeAll { $0.id == id }
                 }
             }
         })
@@ -939,8 +1085,11 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
     // Shapes
 
     private func shape(at point: CGPoint) -> ShapeItem? {
-        page?.shapes.reversed().first { $0.distance(to: point) < 16 }
+        page?.shapes.reversed().first { $0.hit(point, reach: reach) }
     }
+
+    /// A fingertip's worth of page, whatever the zoom.
+    private var reach: CGFloat { max(16, 26 / max(canvas.zoomScale, 0.1)) }
 
     private func shapes(in area: CGRect) -> [ShapeItem] {
         (page?.shapes ?? []).filter { shape in
@@ -1043,10 +1192,103 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             shape.graph = GraphSpec(functions: ["sin(x)", "x^2/5 - 3"])
             shape.width = 2.5
             shape.measures = nil
+        case .arrow:
+            shape.kind = .line
+            shape.points = [CGPoint(x: c.x - r, y: c.y), CGPoint(x: c.x + r, y: c.y)]
+            shape.arrow = true
+            shape.measures = nil
+        case .diagram(let type):
+            let size = type.size
+            shape.kind = .diagram
+            shape.points = [c]
+            shape.radii = CGSize(width: size.width / 2, height: size.height / 2)
+            shape.width = 2.5
+            shape.measures = nil
+            let now = Calendar.current.dateComponents([.year, .month], from: Date())
+            shape.diagram = Diagram(type: type, label: Self.startLabel(type), element: type == .bohr ? 6 : nil,
+                                    month: type == .calendar ? now.month : nil, year: type == .calendar ? now.year : nil)
         }
         let id = shape.id
         editPage("Add Shape") { $0.shapes.append(shape) }
         selectShape(id)
+    }
+
+    private static func startLabel(_ type: DiagramType) -> String? {
+        switch type {
+        case .terminal: "Start"
+        case .process: "Do something"
+        case .decision: "Yes or no?"
+        case .data: "Input"
+        default: nil
+        }
+    }
+
+    /// Round knobs on a selected shape: one turns it, one resizes it.
+    private func layoutKnobs() {
+        guard let editor, selectedShape != nil, mode == .draw else {
+            rotateKnob?.removeFromSuperview()
+            scaleKnob?.removeFromSuperview()
+            return
+        }
+        let shape = editor.shape
+        let size = 30 / max(canvas.zoomScale, 0.1)
+        let b = shape.bounds
+        func knob(_ existing: UIView?, symbol: String, tag: Int) -> UIView {
+            let view = existing ?? {
+                let v = UIImageView(image: UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(weight: .bold)))
+                v.tintColor = .white
+                v.backgroundColor = Theme.uiAccent
+                v.contentMode = .center
+                v.isUserInteractionEnabled = true
+                v.tag = tag
+                v.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(knobDragged(_:))))
+                return v
+            }()
+            if view.superview !== overlay { overlay.addSubview(view) }
+            view.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            view.layer.cornerRadius = size / 2
+            overlay.bringSubviewToFront(view)
+            return view
+        }
+        if shape.turnable {
+            rotateKnob = knob(rotateKnob, symbol: "arrow.clockwise", tag: 1)
+            rotateKnob?.center = CGPoint(x: b.midX, y: b.minY - size * 1.4)
+        } else {
+            rotateKnob?.removeFromSuperview()
+        }
+        if shape.kind != .graph, shape.kind != .projectile {
+            scaleKnob = knob(scaleKnob, symbol: "arrow.up.left.and.arrow.down.right", tag: 2)
+            scaleKnob?.center = CGPoint(x: b.maxX + size * 0.9, y: b.maxY + size * 0.9)
+        } else {
+            scaleKnob?.removeFromSuperview()
+        }
+    }
+
+    @objc private func knobDragged(_ gesture: UIPanGestureRecognizer) {
+        guard let editor, let tag = gesture.view?.tag else { return }
+        let point = gesture.location(in: overlay)
+        switch gesture.state {
+        case .began:
+            shapeDrag = (point, editor.shape)
+        case .changed:
+            guard let drag = shapeDrag else { return }
+            let c = drag.base.center
+            if tag == 1 {
+                var turn = atan2(point.y - c.y, point.x - c.x) - atan2(drag.start.y - c.y, drag.start.x - c.x)
+                // clicks onto every 15 degrees when close
+                let step = CGFloat.pi / 12, nearest = (turn / step).rounded() * step
+                if abs(turn - nearest) < 0.04 { turn = nearest }
+                editor.shape = drag.base.rotated(by: turn)
+            } else {
+                let k = hypot(point.x - c.x, point.y - c.y) / max(hypot(drag.start.x - c.x, drag.start.y - c.y), 1)
+                editor.shape = drag.base.scaled(by: max(k, 0.1))
+            }
+            shapesView.preview = editor.shape
+            layoutHandles()
+        default:
+            shapeDrag = nil
+            commitShape(editor.shape)
+        }
     }
 
     @objc private func shapeTapped(_ gesture: UITapGestureRecognizer) {
@@ -1082,6 +1324,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         shapesView.selected = nil
         handleViews.forEach { $0.removeFromSuperview() }
         handleViews = []
+        layoutKnobs()
         if let inspector, inspector.presentingViewController != nil {
             inspector.dismiss(animated: animated)
         }
@@ -1127,6 +1370,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
 
     /// Round grab handles on the selected shape, kept the same size on screen at any zoom.
     private func layoutHandles() {
+        layoutKnobs()
         guard let editor, selectedShape != nil else { return }
         let points = editor.shape.handles
         if handleViews.count != points.count {
@@ -1199,10 +1443,16 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             let rect = Self.rect(selectionStart, point)
             if mode == .link {
                 if rect.width > 8, rect.height > 8 { onLinkArea?(rect) }
+                onModeDone?()
+            } else if !strokes(in: rect).isEmpty {
+                // keep the box showing while the menu decides what to do with it
+                inkSelection = rect
+                selectionLayer.path = UIBezierPath(roundedRect: rect, cornerRadius: 6).cgPath
+                let source = overlay.convert(CGPoint(x: rect.midX, y: rect.minY), to: self)
+                editMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: source))
             } else {
-                convertStrokes(in: rect)
+                onModeDone?()
             }
-            onModeDone?()
         default:
             selectionLayer.path = nil
         }
@@ -1214,10 +1464,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
 
     private func convertStrokes(in rect: CGRect) {
         let drawing = canvas.drawing
-        let picked = drawing.strokes.indices.filter {
-            let r = drawing.strokes[$0].renderBounds
-            return rect.contains(CGPoint(x: r.midX, y: r.midY))
-        }
+        let picked = strokes(in: rect)
         guard !picked.isEmpty, let pageID = page?.id else { return }
         let chosen = picked.map { drawing.strokes[$0] }
         let bounds = chosen.reduce(CGRect.null) { $0.union($1.renderBounds) }
@@ -1292,6 +1539,318 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
             }
         }
         page.textBoxes.removeAll { $0.anchor != nil && !matched.contains($0.id) }
+    }
+}
+
+extension NoteCanvasView {
+    // Typing in place
+
+    /// Opens a text box for typing (or Scribble) right on the page.
+    func beginTyping(_ box: TextBox, isNew: Bool) {
+        endTyping()
+        let view = UITextView()
+        view.text = box.text
+        view.font = Self.typingFont(box.fontSize)
+        view.textColor = box.sticky == nil ? inkColor : .black
+        view.backgroundColor = box.sticky.map { UIColor(hex: $0) } ?? Theme.uiAccent.withAlphaComponent(0.06)
+        view.layer.cornerRadius = box.sticky == nil ? 6 : 3
+        view.layer.borderColor = Theme.uiAccent.withAlphaComponent(0.6).cgColor
+        view.layer.borderWidth = 1.5
+        view.isScrollEnabled = false
+        view.textContainerInset = box.sticky == nil ? UIEdgeInsets(top: 4, left: 2, bottom: 4, right: 2) : UIEdgeInsets(top: 16, left: 12, bottom: 16, right: 12)
+        view.delegate = self
+        let bar = UIToolbar()
+        bar.items = [UIBarButtonItem(systemItem: .flexibleSpace),
+                     UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.endTyping() })]
+        bar.sizeToFit()
+        view.inputAccessoryView = bar
+        typing = (view, box, isNew)
+        sizeTyping()
+        overlay.addSubview(view)
+        boxViews[box.id]?.isHidden = true
+        view.becomeFirstResponder()
+    }
+
+    static func typingFont(_ size: CGFloat) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size)
+        return base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: size) } ?? base
+    }
+
+    private func sizeTyping() {
+        guard let typing else { return }
+        let origin = typing.box.origin
+        let width = typing.box.sticky != nil ? Self.stickyWidth : max(min(560, pageSize.width - origin.x - 20), 200)
+        let fit = typing.view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let minimum = typing.box.sticky != nil ? Self.stickyWidth * 0.86 : typing.box.fontSize * 1.6
+        typing.view.frame = CGRect(origin: origin, size: CGSize(width: width, height: max(fit.height, minimum)))
+    }
+
+    func textViewDidChange(_ textView: UITextView) {
+        sizeTyping()
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+        // Scribble hands focus around while writing; only a real finish closes the box
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let typing = self.typing, typing.view === textView, !textView.isFirstResponder else { return }
+            self.endTyping()
+        }
+    }
+
+    /// Saves what was typed: a new box, an edit, or nothing when it's empty.
+    func endTyping() {
+        guard let typing else { return }
+        self.typing = nil
+        let text = typing.view.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        typing.view.removeFromSuperview()
+        let box = typing.box
+        if typing.isNew {
+            if text.isEmpty {
+                rebuildOverlay()
+            } else {
+                var added = box
+                added.text = text
+                editPage(box.sticky == nil ? "Add Text" : "Add Note") { $0.textBoxes.append(added) }
+            }
+        } else if text != box.text {
+            editPage(text.isEmpty ? "Delete Text" : "Edit Text") { page in
+                guard let i = page.textBoxes.firstIndex(where: { $0.id == box.id }) else { return }
+                if text.isEmpty { page.textBoxes.remove(at: i) } else { page.textBoxes[i].text = text }
+            }
+        } else {
+            rebuildOverlay()
+        }
+        ink.activate()
+    }
+
+    /// The text pen: a finger tap types at that spot, or into the text that's there.
+    @objc func typeTapped(_ gesture: UITapGestureRecognizer) {
+        if typing != nil {
+            endTyping()
+            return
+        }
+        let point = gesture.location(in: overlay)
+        if let box = page?.textBoxes.reversed().first(where: { $0.anchor == nil && boxViews[$0.id]?.frame.contains(point) == true }) {
+            beginTyping(box, isNew: false)
+        } else {
+            beginTyping(TextBox(text: "", origin: CGPoint(x: point.x, y: point.y - 18), fontSize: 24), isNew: true)
+        }
+    }
+
+    // To-do lists
+
+    func checklistView(_ list: Checklist) -> UIView {
+        let width: CGFloat = 380
+        let container = UIView()
+        var y: CGFloat = 0
+        var titleConfig = UIButton.Configuration.plain()
+        titleConfig.attributedTitle = AttributedString(list.title, attributes: AttributeContainer([
+            .font: Self.typingFont(list.fontSize * 1.1).withWeight(.bold), .foregroundColor: inkColor,
+        ]))
+        titleConfig.contentInsets = .zero
+        let title = UIButton(configuration: titleConfig)
+        title.contentHorizontalAlignment = .leading
+        title.menu = UIMenu(children: [
+            UIAction(title: "Edit List", image: UIImage(systemName: "pencil")) { [weak self] _ in self?.editChecklist(list, isNew: false) },
+            UIAction(title: "Clear Ticked", image: UIImage(systemName: "checkmark.circle")) { [weak self] _ in
+                self?.editPage("Clear Ticked") { page in
+                    if let i = page.checklists.firstIndex(where: { $0.id == list.id }) { page.checklists[i].items.removeAll { $0.done } }
+                }
+            },
+            UIAction(title: "Delete List", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
+                self?.editPage("Delete List") { page in page.checklists.removeAll { $0.id == list.id } }
+            },
+        ])
+        title.showsMenuAsPrimaryAction = true
+        title.frame = CGRect(x: 0, y: 0, width: width, height: list.fontSize * 1.8)
+        container.addSubview(title)
+        y += title.frame.height + 4
+        for item in list.items {
+            var config = UIButton.Configuration.plain()
+            config.image = UIImage(systemName: item.done ? "checkmark.square.fill" : "square",
+                                   withConfiguration: UIImage.SymbolConfiguration(pointSize: list.fontSize * 0.9))
+            config.imagePadding = 10
+            config.contentInsets = .zero
+            config.baseForegroundColor = item.done ? Theme.uiAccent : inkColor
+            var attrs: [NSAttributedString.Key: Any] = [.font: Self.typingFont(list.fontSize),
+                                                        .foregroundColor: item.done ? inkColor.withAlphaComponent(0.45) : inkColor]
+            if item.done { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            config.attributedTitle = AttributedString(NSAttributedString(string: item.text, attributes: attrs))
+            let row = UIButton(configuration: config, primaryAction: UIAction { [weak self] _ in
+                UISelectionFeedbackGenerator().selectionChanged()
+                self?.editPage(item.done ? "Untick" : "Tick") { page in
+                    guard let i = page.checklists.firstIndex(where: { $0.id == list.id }),
+                          let j = page.checklists[i].items.firstIndex(where: { $0.id == item.id }) else { return }
+                    page.checklists[i].items[j].done.toggle()
+                }
+            })
+            row.contentHorizontalAlignment = .leading
+            row.titleLabel?.numberOfLines = 0
+            let height = max(list.fontSize * 1.7, row.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+            row.frame = CGRect(x: 0, y: y, width: width, height: height)
+            container.addSubview(row)
+            y += height
+        }
+        container.frame = CGRect(origin: list.origin, size: CGSize(width: width, height: y))
+        return container
+    }
+
+    /// One line per item, "[x]" in front marking it done; the first line is the title.
+    func editChecklist(_ list: Checklist, isNew: Bool) {
+        guard let presenter = viewController else { return }
+        let lines = [list.title] + list.items.map { ($0.done ? "[x] " : "") + $0.text }
+        let start = isNew ? list.title + "\n" : lines.joined(separator: "\n")
+        TextBoxEditor.present(from: presenter, text: start, title: isNew ? "New To-Do List" : "Edit To-Do List") { [weak self] text in
+            var rows = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            guard !rows.isEmpty else {
+                if !isNew { self?.editPage("Delete List") { page in page.checklists.removeAll { $0.id == list.id } } }
+                return
+            }
+            var edited = list
+            edited.title = rows.removeFirst()
+            edited.items = rows.map { row in
+                var line = row
+                for prefix in ["- ", "* "] where line.hasPrefix(prefix) { line.removeFirst(prefix.count) }
+                let done = line.lowercased().hasPrefix("[x]")
+                if done || line.hasPrefix("[ ]") { line = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces) }
+                return ChecklistItem(id: list.items.first { $0.text == line }?.id ?? UUID(), text: line, done: done)
+            }
+            self?.editPage(isNew ? "Add To-Do List" : "Edit To-Do List") { page in
+                if let i = page.checklists.firstIndex(where: { $0.id == list.id }) { page.checklists[i] = edited } else { page.checklists.append(edited) }
+            }
+        }
+    }
+
+    // Voice notes
+
+    func voiceChip(_ note: VoiceNote) -> UIView {
+        let url = audioURL?(note.file)
+        let playing = url != nil && VoicePlayer.shared.playing == url
+        var config = UIButton.Configuration.filled()
+        config.image = UIImage(systemName: playing ? "stop.fill" : "waveform")
+        config.imagePadding = 6
+        config.title = note.title + "  " + VoiceRecorderSheet.clock(note.duration)
+        config.cornerStyle = .capsule
+        config.buttonSize = .small
+        config.baseBackgroundColor = playing ? Theme.uiAccent : Theme.uiAccent.withAlphaComponent(0.85)
+        let button = UIButton(configuration: config, primaryAction: UIAction { _ in
+            if let url { VoicePlayer.shared.toggle(url) }
+        })
+        button.menu = UIMenu(title: note.title, children: [
+            UIAction(title: "Delete Voice Note", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
+                VoicePlayer.shared.stop()
+                self?.editPage("Delete Voice Note") { page in page.voiceNotes.removeAll { $0.id == note.id } }
+            },
+        ])
+        button.sizeToFit()
+        button.center = note.position
+        return button
+    }
+
+    // Handwriting selection
+
+    func strokes(in rect: CGRect) -> [Int] {
+        let drawing = canvas.drawing
+        return drawing.strokes.indices.filter {
+            let r = drawing.strokes[$0].renderBounds
+            return rect.contains(CGPoint(x: r.midX, y: r.midY))
+        }
+    }
+
+    func inkMenu(_ rect: CGRect) -> UIMenu {
+        UIMenu(children: [
+            UIAction(title: "Turn into Typed Text", image: UIImage(systemName: "textformat")) { [weak self] _ in self?.convertStrokes(in: rect) },
+            UIAction(title: "Restyle with Current Pen", image: UIImage(systemName: "paintbrush.pointed")) { [weak self] _ in self?.restyle(in: rect, width: nil) },
+            UIAction(title: "Thicker", image: UIImage(systemName: "lineweight")) { [weak self] _ in self?.restyle(in: rect, width: 1.4) },
+            UIAction(title: "Thinner", image: UIImage(systemName: "line.3.horizontal")) { [weak self] _ in self?.restyle(in: rect, width: 0.7) },
+            UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
+                guard let self else { return }
+                let gone = Set(self.strokes(in: rect))
+                let kept = self.canvas.drawing.strokes.enumerated().filter { !gone.contains($0.offset) }.map(\.element)
+                self.ink.commit(PKDrawing(strokes: kept), name: "Delete Handwriting")
+            },
+        ])
+    }
+
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, willDismissMenuFor configuration: UIEditMenuConfiguration,
+                             animator: any UIEditMenuInteractionAnimating) {
+        guard inkSelection != nil else { return }
+        inkSelection = nil
+        selectionLayer.path = nil
+        onModeDone?()
+    }
+
+    /// Redraws the picked strokes with the current pen's ink and colour, or just scales their width.
+    func restyle(in rect: CGRect, width factor: CGFloat?) {
+        let picked = Set(strokes(in: rect))
+        guard !picked.isEmpty else { return }
+        let pen = InkTools.shared.tool as? PKInkingTool
+        if factor == nil, pen == nil { return }
+        let strokes = canvas.drawing.strokes.enumerated().map { i, stroke -> PKStroke in
+            guard picked.contains(i) else { return stroke }
+            let sizes = stroke.path.map(\.size.width)
+            let average = sizes.reduce(0, +) / CGFloat(max(sizes.count, 1))
+            let k = factor ?? min(max((pen?.width ?? average) / max(average, 0.1), 0.2), 5)
+            let points = stroke.path.map { p in
+                PKStrokePoint(location: p.location, timeOffset: p.timeOffset, size: CGSize(width: p.size.width * k, height: p.size.height * k),
+                              opacity: p.opacity, force: p.force, azimuth: p.azimuth, altitude: p.altitude)
+            }
+            var inked = stroke.ink
+            if factor == nil, let pen { inked = PKInk(pen.inkType, color: pen.color) }
+            return PKStroke(ink: inked, path: PKStrokePath(controlPoints: points, creationDate: stroke.path.creationDate),
+                            transform: stroke.transform, mask: stroke.mask)
+        }
+        ink.commit(PKDrawing(strokes: strokes), name: "Restyle Handwriting")
+    }
+}
+
+/// With the text pen, writing anywhere on the page becomes typed text through Scribble, Apple's own handwriting engine.
+extension NoteCanvasView: UIIndirectScribbleInteractionDelegate {
+    private static let newText = "new"
+
+    func indirectScribbleInteraction(_ interaction: UIInteraction, requestElementsIn rect: CGRect, completion: @escaping ([String]) -> Void) {
+        guard InkTools.shared.writesText, mode == .draw, let page else { return completion([]) }
+        // existing text first, so writing over it goes into it; anywhere else starts a new box
+        var ids = page.textBoxes.filter { $0.anchor == nil }.map(\.id.uuidString)
+        if let typing, typing.isNew { ids.insert(typing.box.id.uuidString, at: 0) }
+        completion(ids + [Self.newText])
+    }
+
+    func indirectScribbleInteraction(_ interaction: UIInteraction, isElementFocused elementIdentifier: String) -> Bool {
+        typing?.box.id.uuidString == elementIdentifier && typing?.view.isFirstResponder == true
+    }
+
+    func indirectScribbleInteraction(_ interaction: UIInteraction, frameForElement elementIdentifier: String) -> CGRect {
+        if elementIdentifier == Self.newText {
+            return overlay.convert(overlay.bounds, to: self)
+        }
+        if let typing, typing.box.id.uuidString == elementIdentifier {
+            // room to keep writing along the line and just below
+            let f = typing.view.frame
+            return overlay.convert(CGRect(x: f.minX - 20, y: f.minY - 10, width: f.width + 260, height: f.height + 60), to: self)
+        }
+        guard let box = page?.textBoxes.first(where: { $0.id.uuidString == elementIdentifier }), let view = boxViews[box.id] else { return .zero }
+        return overlay.convert(view.frame.insetBy(dx: -10, dy: -10), to: self)
+    }
+
+    func indirectScribbleInteraction(_ interaction: UIInteraction, focusElementIfNeeded elementIdentifier: String, referencePoint focusReferencePoint: CGPoint,
+                                     completion: @escaping ((any UIResponder & UITextInput)?) -> Void) {
+        if typing?.box.id.uuidString != elementIdentifier {
+            if let box = page?.textBoxes.first(where: { $0.id.uuidString == elementIdentifier }) {
+                beginTyping(box, isNew: false)
+            } else {
+                let p = convert(focusReferencePoint, to: overlay)
+                beginTyping(TextBox(text: "", origin: CGPoint(x: p.x, y: p.y - 18), fontSize: 24), isNew: true)
+            }
+        }
+        typing?.view.becomeFirstResponder()
+        completion(typing?.view)
+    }
+}
+
+extension UIFont {
+    func withWeight(_ weight: UIFont.Weight) -> UIFont {
+        UIFont(descriptor: fontDescriptor.addingAttributes([.traits: [UIFontDescriptor.TraitKey.weight: weight]]), size: pointSize)
     }
 }
 
