@@ -122,6 +122,8 @@ struct PageCurlPager: UIViewControllerRepresentable {
         for gesture in pager.gestureRecognizers {
             gesture.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
             gesture.isEnabled = zoom?.zoomed != true
+            // a spread curl past either end throws instead of refusing
+            gesture.delegate = context.coordinator
         }
         // a thumb on the page's outer edge pushes it into an arch and over
         let push = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pushed(_:)))
@@ -224,6 +226,17 @@ struct PageCurlPager: UIViewControllerRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+            if gesture !== push, gesture !== pinch {
+                guard turning == nil, let view = gesture.view else { return false }
+                let forward: Bool
+                if let pan = gesture as? UIPanGestureRecognizer {
+                    let v = pan.velocity(in: view)
+                    forward = v.x == 0 ? pan.location(in: view).x > view.bounds.midX : v.x < 0
+                } else {
+                    forward = gesture.location(in: view).x > view.bounds.midX
+                }
+                return target(forward: forward) != nil
+            }
             guard gesture === push, turning == nil, let pan = gesture as? UIPanGestureRecognizer, let view = pan.view else { return true }
             let p = pan.location(in: view), t = pan.translation(in: view)
             let start = CGPoint(x: p.x - t.x, y: p.y - t.y)

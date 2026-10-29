@@ -609,9 +609,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UIPopoverPres
         bringSubviewToFront(spine)
         guard bounds.width > 0, bounds.height > 0, bounds.size != fittedSize else { return }
         fittedSize = bounds.size
-        let fit = bookMode
-            ? min(bounds.width / pageSize.width, bounds.height / pageSize.height)
-            : bounds.width / pageSize.width
+        // the whole page fits, so landscape doesn't open zoomed in
+        let fit = min(bounds.width / pageSize.width, bounds.height / pageSize.height)
         fitScale = fit
         // a book page never shrinks below the paper
         canvas.minimumZoomScale = bookMode ? fit : fit * 0.3
