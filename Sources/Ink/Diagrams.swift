@@ -428,18 +428,68 @@ enum DiagramRenderer {
 
     // Planning
 
-    private static func calendar(_ d: Diagram, in r: CGRect, color: UIColor, _ ctx: CGContext) {
-        let now = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+    private static func month(of d: Diagram) -> (month: Int, year: Int, offset: Int, days: Int)? {
+        let now = Calendar.current.dateComponents([.year, .month], from: Date())
         let month = d.month ?? now.month ?? 1, year = d.year ?? now.year ?? 2026
         var cal = Calendar(identifier: .gregorian)
         cal.firstWeekday = 2
         guard let first = cal.date(from: DateComponents(year: year, month: month, day: 1)),
-              let days = cal.range(of: .day, in: .month, for: first)?.count else { return }
+              let days = cal.range(of: .day, in: .month, for: first)?.count else { return nil }
         // Monday-first column of the 1st
-        let offset = (cal.component(.weekday, from: first) + 5) % 7
+        return (month, year, (cal.component(.weekday, from: first) + 5) % 7, days)
+    }
+
+    static func calendarTitle(_ d: Diagram) -> String {
+        guard let m = month(of: d) else { return "" }
+        return DateFormatter().monthSymbols[m.month - 1] + " \(m.year)"
+    }
+
+    /// Where the title and each day sit, keyed like `CalendarNote.key`; for drawing and for tapping into.
+    static func calendarSlots(_ d: Diagram, in r: CGRect) -> [String: CGRect] {
+        guard let m = month(of: d) else { return [:] }
         let header = r.height * 0.14, names = r.height * 0.08
-        let title = DateFormatter().monthSymbols[month - 1] + " \(year)"
-        text(title, at: CGPoint(x: r.midX, y: r.minY + header / 2), size: header * 0.5, color: color, weight: .bold)
+        var slots = ["title": CGRect(x: r.minX, y: r.minY, width: r.width, height: header)]
+        let grid = CGRect(x: r.minX, y: r.minY + header + names, width: r.width, height: r.height - header - names)
+        let cw = grid.width / 7, ch = grid.height / 6
+        for day in 1...m.days {
+            let slot = m.offset + day - 1
+            slots["\(day)"] = CGRect(x: grid.minX + cw * CGFloat(slot % 7), y: grid.minY + ch * CGFloat(slot / 7), width: cw, height: ch)
+        }
+        return slots
+    }
+
+    /// Text size before a note's own scale.
+    static func calendarTextSize(_ key: String, in r: CGRect) -> CGFloat {
+        key == "title" ? r.height * 0.07 : min(r.width / 7, r.height * 0.78 / 6) * 0.16
+    }
+
+    /// How far a day's notes sit below its number.
+    static func calendarNoteInset(in cell: CGRect) -> CGFloat {
+        min(cell.width, cell.height) * 0.38
+    }
+
+    static func calendarFont(_ size: CGFloat, title: Bool) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size, weight: title ? .bold : .medium)
+        return base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: size) } ?? base
+    }
+
+    private static func calendar(_ d: Diagram, in r: CGRect, color: UIColor, _ ctx: CGContext) {
+        let now = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        guard let m = month(of: d) else { return }
+        let slots = calendarSlots(d, in: r)
+        let notes = Dictionary((d.notes ?? []).map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        let header = r.height * 0.14, names = r.height * 0.08
+        if let title = notes["title"], let slot = slots["title"] {
+            let font = calendarFont(calendarTextSize("title", in: r) * (title.scale ?? 1), title: true)
+            let style = NSMutableParagraphStyle()
+            style.alignment = .center
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: title.color.map { UIColor(hex: $0) } ?? color, .paragraphStyle: style]
+            let height = min((title.text as NSString).boundingRect(with: CGSize(width: slot.width, height: .greatestFiniteMagnitude),
+                                                                   options: .usesLineFragmentOrigin, attributes: attrs, context: nil).height, slot.height)
+            (title.text as NSString).draw(in: CGRect(x: slot.minX, y: slot.midY - height / 2, width: slot.width, height: height), withAttributes: attrs)
+        } else {
+            text(calendarTitle(d), at: CGPoint(x: r.midX, y: r.minY + header / 2), size: header * 0.5, color: color, weight: .bold)
+        }
         let grid = CGRect(x: r.minX, y: r.minY + header + names, width: r.width, height: r.height - header - names)
         let cw = grid.width / 7, ch = grid.height / 6
         for (i, name) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].enumerated() {
@@ -458,16 +508,24 @@ enum DiagramRenderer {
         }
         ctx.strokePath()
         ctx.restoreGState()
-        for day in 1...days {
-            let slot = offset + day - 1
-            let cellRect = CGRect(x: grid.minX + cw * CGFloat(slot % 7), y: grid.minY + ch * CGFloat(slot / 7), width: cw, height: ch)
+        for day in 1...m.days {
+            guard let cellRect = slots["\(day)"] else { continue }
             let corner = CGPoint(x: cellRect.minX + min(cw, ch) * 0.22, y: cellRect.minY + min(cw, ch) * 0.22)
-            if day == now.day, month == now.month, year == now.year {
+            if day == now.day, m.month == now.month, m.year == now.year {
                 let ring = min(cw, ch) * 0.18
                 ctx.setFillColor(color.withAlphaComponent(0.18).cgColor)
                 ctx.fillEllipse(in: CGRect(x: corner.x - ring, y: corner.y - ring, width: ring * 2, height: ring * 2))
             }
             text("\(day)", at: corner, size: min(cw, ch) * 0.2, color: color, weight: .semibold)
+            if let note = notes["\(day)"] {
+                let top = calendarNoteInset(in: cellRect)
+                let box = CGRect(x: cellRect.minX + 4, y: cellRect.minY + top, width: cellRect.width - 8, height: cellRect.height - top - 2)
+                let font = calendarFont(calendarTextSize("\(day)", in: r) * (note.scale ?? 1), title: false)
+                ctx.saveGState()
+                ctx.clip(to: box)
+                (note.text as NSString).draw(in: box, withAttributes: [.font: font, .foregroundColor: note.color.map { UIColor(hex: $0) } ?? color])
+                ctx.restoreGState()
+            }
         }
     }
 

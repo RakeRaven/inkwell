@@ -7,12 +7,15 @@ final class ShapeEditor {
     var shape: ShapeItem
     @ObservationIgnored var onCommit: ((ShapeItem) -> Void)?
     @ObservationIgnored var onDelete: (() -> Void)?
+    /// The canvas is dragging the shape; the fields' stale write-backs would yank it back.
+    @ObservationIgnored var isDragging: () -> Bool = { false }
 
     init(shape: ShapeItem) {
         self.shape = shape
     }
 
     func apply(_ edit: (ShapeItem) -> ShapeItem) {
+        guard !isDragging() else { return }
         let edited = edit(shape)
         guard edited != shape else { return }
         shape = edited
@@ -115,16 +118,6 @@ struct ShapeInspector: View {
             if DiagramType.circuit.contains(d.type) {
                 sectionTitle("Component")
                 typePicker(DiagramType.circuit, current: d.type)
-            }
-            if d.type == .calendar {
-                let now = Calendar.current.dateComponents([.year, .month], from: Date())
-                sectionTitle("Month")
-                Picker("Month", selection: Binding(get: { d.month ?? now.month ?? 1 }, set: { m in setDiagram { $0.month = m } })) {
-                    ForEach(1...12, id: \.self) { Text(DateFormatter().monthSymbols[$0 - 1]).tag($0) }
-                }
-                .pickerStyle(.menu)
-                Stepper("Year \(String(d.year ?? now.year ?? 2026))", value: Binding(get: { d.year ?? now.year ?? 2026 }, set: { y in setDiagram { $0.year = y } }), in: 1900...2200)
-                    .font(.system(size: 15, weight: .semibold))
             }
             Text("Drag the round knobs to resize and turn it.")
                 .font(.caption)

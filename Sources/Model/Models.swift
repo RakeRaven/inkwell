@@ -304,6 +304,18 @@ struct Diagram: Codable, Equatable {
     var element: Int?
     var month: Int?
     var year: Int?
+    /// Text written into a calendar's title or days.
+    var notes: [CalendarNote]?
+}
+
+/// Free text in a calendar, each piece styled on its own.
+struct CalendarNote: Codable, Equatable {
+    /// "title", or the day of the month.
+    var key: String
+    var text: String
+    /// Relative to the calendar's own text size, so it grows with the calendar.
+    var scale: CGFloat?
+    var color: String?
 }
 
 enum DiagramType: String, Codable, CaseIterable, Identifiable {

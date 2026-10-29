@@ -41,7 +41,7 @@ struct NotebookSearch: View {
             for shape in page.shapes {
                 guard let d = shape.diagram else { continue }
                 let element = d.element.map { Elements.name($0) } ?? ""
-                for text in [d.label ?? "", d.type.title, element] where !text.isEmpty && has(text) {
+                for text in [d.label ?? "", d.type.title, element] + (d.notes ?? []).map(.text) where !text.isEmpty && has(text) {
                     found.append(Hit(page: i, text: text, rect: shape.bounds, symbol: "square.on.circle"))
                     break
                 }

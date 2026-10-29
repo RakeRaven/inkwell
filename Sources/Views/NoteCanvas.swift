@@ -109,6 +109,10 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
     /// Text being typed or written in place, and whether it's a new box.
     private var typing: (view: UITextView, box: TextBox, isNew: Bool)?
     private var checklistViews: [UUID: UIView] = [:]
+    /// The list being typed in survives overlay rebuilds, or the keyboard would drop.
+    private var editingList: ChecklistView?
+    /// A calendar's title or day being typed into.
+    private var calendarEditor: CalendarEdit?
     private var voiceViews: [UUID: UIView] = [:]
     private var rotateKnob: UIView?
     private var scaleKnob: UIView?
@@ -383,6 +387,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         shapeGate.shouldBegin = { [weak self] gesture in
             guard let self, self.mode == .draw else { return false }
             let point = gesture.location(in: self.overlay)
+            // a corner handle or knob sits on the edge; the drag is for it, not for moving the whole shape
+            let grips = self.handleViews + [self.rotateKnob, self.scaleKnob].compactMap { $0?.superview == nil ? nil : $0 }
+            if grips.contains(where: { $0.frame.insetBy(dx: -6, dy: -6).contains(point) }) { return false }
             if gesture === self.shapeTap {
                 return self.shape(at: point) != nil || self.selectedShape != nil
             }
@@ -544,8 +551,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
 
     func addChecklist() {
         let c = visibleCenter()
-        let list = Checklist(title: "To Do", items: [], origin: CGPoint(x: c.x - 180, y: c.y - 80))
-        editChecklist(list, isNew: true)
+        let list = Checklist(title: "", items: [ChecklistItem(text: "")], origin: CGPoint(x: c.x - ChecklistView.width / 2, y: c.y - 80))
+        editPage("Add To-Do List") { $0.checklists.append(list) }
+        (checklistViews[list.id] as? ChecklistView)?.focus(row: 0)
     }
 
     func addVoiceNote(file: String, duration: TimeInterval) {
@@ -636,7 +644,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         let keyboard = convert(frame, from: window.screen.coordinateSpace)
         keyboardOverlap = max(0, bounds.maxY - keyboard.minY)
         syncZoom()
-        if keyboardOverlap > 0, let view = typing?.view {
+        if keyboardOverlap > 0, let view = typing?.view ?? editingList ?? calendarEditor?.view {
             canvas.scrollRectToVisible(view.convert(view.bounds, to: canvas).insetBy(dx: 0, dy: -24), animated: true)
         }
     }
@@ -708,7 +716,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
 
     private func rebuildOverlay() {
         // the box being typed in stays put, or the keyboard would drop
-        overlay.subviews.filter { $0 !== typing?.view }.forEach { $0.removeFromSuperview() }
+        if let list = editingList, page?.checklists.contains(where: { $0.id == list.list.id }) != true { editingList = nil }
+        overlay.subviews.filter { $0 !== typing?.view && $0 !== editingList && $0 !== calendarEditor?.view }.forEach { $0.removeFromSuperview() }
         media.subviews.forEach { $0.removeFromSuperview() }
         checklistViews.removeAll()
         voiceViews.removeAll()
@@ -747,6 +756,10 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
             overlay.addSubview(view)
         }
         for list in page.checklists {
+            if let editing = editingList, editing.list.id == list.id {
+                checklistViews[list.id] = editing
+                continue
+            }
             let view = checklistView(list)
             checklistViews[list.id] = view
             overlay.addSubview(view)
@@ -1232,7 +1245,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         }
         let id = shape.id
         editPage("Add Shape") { $0.shapes.append(shape) }
-        selectShape(id)
+        // a calendar just lands on the page, ready to tap into
+        if shape.diagram?.type != .calendar { selectShape(id) }
     }
 
     private static func startLabel(_ type: DiagramType) -> String? {
@@ -1317,8 +1331,10 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
     }
 
     @objc private func shapeTapped(_ gesture: UITapGestureRecognizer) {
-        if let hit = shape(at: gesture.location(in: overlay)) {
+        let point = gesture.location(in: overlay)
+        if let hit = shape(at: point) {
             selectShape(hit.id)
+            if hit.diagram?.type == .calendar { beginCalendarEdit(hit.id, at: point) }
         } else {
             deselectShape()
         }
@@ -1330,8 +1346,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         deselectShape(animated: false)
         selectedShape = id
         let editor = ShapeEditor(shape: shape)
-        // mid-drag the canvas saves at the end; saving now would rebuild the knob out from under the finger
-        editor.onCommit = { [weak self] in if self?.shapeDrag == nil { self?.commitShape($0) } }
+        editor.onCommit = { [weak self] in self?.commitShape($0) }
+        // mid-drag the canvas saves at the end; the panel saving would rebuild the knob out from under the finger
+        editor.isDragging = { [weak self] in self?.shapeDrag != nil }
         editor.onDelete = { [weak self] in
             self?.editPage("Delete Shape") { page in page.shapes.removeAll { $0.id == id } }
             self?.deselectShape()
@@ -1339,10 +1356,12 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         self.editor = editor
         shapesView.selected = id
         rebuildOverlay()
-        presentInspector(for: shape, editor: editor)
+        // calendars are edited in place, from the keyboard bar
+        if shape.diagram?.type != .calendar { presentInspector(for: shape, editor: editor) }
     }
 
     private func deselectShape(animated: Bool = true) {
+        endCalendarEdit()
         guard selectedShape != nil else { return }
         selectedShape = nil
         editor = nil
@@ -1389,7 +1408,7 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
                 return handle
             }
         }
-        let size = 26 / max(canvas.zoomScale, 0.1)
+        let size = 32 / max(canvas.zoomScale, 0.1)
         for (handle, p) in zip(handleViews, points) {
             handle.bounds = CGRect(x: 0, y: 0, width: size, height: size)
             handle.center = p
@@ -1596,7 +1615,9 @@ extension NoteCanvasView {
     func textViewDidEndEditing(_ textView: UITextView) {
         // Scribble hands focus around while writing; only a real finish closes the box
         DispatchQueue.main.async { [weak self] in
-            guard let self, let typing = self.typing, typing.view === textView, !textView.isFirstResponder else { return }
+            guard let self, !textView.isFirstResponder else { return }
+            if self.calendarEditor?.view === textView { self.endCalendarEdit() }
+            guard let typing = self.typing, typing.view === textView else { return }
             self.endTyping()
         }
     }
@@ -1644,85 +1665,15 @@ extension NoteCanvasView {
     // To-do lists
 
     func checklistView(_ list: Checklist) -> UIView {
-        let width: CGFloat = 380
-        let container = UIView()
-        var y: CGFloat = 0
-        var titleConfig = UIButton.Configuration.plain()
-        titleConfig.attributedTitle = AttributedString(list.title, attributes: AttributeContainer([
-            .font: Self.typingFont(list.fontSize * 1.1).withWeight(.bold), .foregroundColor: inkColor,
-        ]))
-        titleConfig.contentInsets = .zero
-        let title = UIButton(configuration: titleConfig)
-        title.contentHorizontalAlignment = .leading
-        title.menu = UIMenu(children: [
-            UIAction(title: "Edit List", image: UIImage(systemName: "pencil")) { [weak self] _ in self?.editChecklist(list, isNew: false) },
-            UIAction(title: "Clear Ticked", image: UIImage(systemName: "checkmark.circle")) { [weak self] _ in
-                self?.editPage("Clear Ticked") { page in
-                    if let i = page.checklists.firstIndex(where: { $0.id == list.id }) { page.checklists[i].items.removeAll { $0.done } }
-                }
-            },
-            UIAction(title: "Delete List", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
-                self?.editPage("Delete List") { page in page.checklists.removeAll { $0.id == list.id } }
-            },
-        ])
-        title.showsMenuAsPrimaryAction = true
-        title.frame = CGRect(x: 0, y: 0, width: width, height: list.fontSize * 1.8)
-        container.addSubview(title)
-        y += title.frame.height + 4
-        for item in list.items {
-            var config = UIButton.Configuration.plain()
-            config.image = UIImage(systemName: item.done ? "checkmark.square.fill" : "square",
-                                   withConfiguration: UIImage.SymbolConfiguration(pointSize: list.fontSize * 0.9))
-            config.imagePadding = 10
-            config.contentInsets = .zero
-            config.baseForegroundColor = item.done ? Theme.uiAccent : inkColor
-            var attrs: [NSAttributedString.Key: Any] = [.font: Self.typingFont(list.fontSize),
-                                                        .foregroundColor: item.done ? inkColor.withAlphaComponent(0.45) : inkColor]
-            if item.done { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-            config.attributedTitle = AttributedString(NSAttributedString(string: item.text, attributes: attrs))
-            let row = UIButton(configuration: config, primaryAction: UIAction { [weak self] _ in
-                UISelectionFeedbackGenerator().selectionChanged()
-                self?.editPage(item.done ? "Untick" : "Tick") { page in
-                    guard let i = page.checklists.firstIndex(where: { $0.id == list.id }),
-                          let j = page.checklists[i].items.firstIndex(where: { $0.id == item.id }) else { return }
-                    page.checklists[i].items[j].done.toggle()
-                }
-            })
-            row.contentHorizontalAlignment = .leading
-            row.titleLabel?.numberOfLines = 0
-            let height = max(list.fontSize * 1.7, row.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
-            row.frame = CGRect(x: 0, y: y, width: width, height: height)
-            container.addSubview(row)
-            y += height
-        }
-        container.frame = CGRect(origin: list.origin, size: CGSize(width: width, height: y))
-        return container
-    }
-
-    /// One line per item, "[x]" in front marking it done; the first line is the title.
-    func editChecklist(_ list: Checklist, isNew: Bool) {
-        guard let presenter = viewController else { return }
-        let lines = [list.title] + list.items.map { ($0.done ? "[x] " : "") + $0.text }
-        let start = isNew ? list.title + "\n" : lines.joined(separator: "\n")
-        TextBoxEditor.present(from: presenter, text: start, title: isNew ? "New To-Do List" : "Edit To-Do List") { [weak self] text in
-            var rows = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            guard !rows.isEmpty else {
-                if !isNew { self?.editPage("Delete List") { page in page.checklists.removeAll { $0.id == list.id } } }
-                return
-            }
-            var edited = list
-            edited.title = rows.removeFirst()
-            edited.items = rows.map { row in
-                var line = row
-                for prefix in ["- ", "* "] where line.hasPrefix(prefix) { line.removeFirst(prefix.count) }
-                let done = line.lowercased().hasPrefix("[x]")
-                if done || line.hasPrefix("[ ]") { line = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces) }
-                return ChecklistItem(id: list.items.first { $0.text == line }?.id ?? UUID(), text: line, done: done)
-            }
-            self?.editPage(isNew ? "Add To-Do List" : "Edit To-Do List") { page in
-                if let i = page.checklists.firstIndex(where: { $0.id == list.id }) { page.checklists[i] = edited } else { page.checklists.append(edited) }
+        let view = ChecklistView(list: list, ink: inkColor)
+        view.onEditing = { [weak self, weak view] on in self?.editingList = on ? view : nil }
+        view.onSave = { [weak self] saved, name in
+            self?.editPage(name) { page in
+                guard let i = page.checklists.firstIndex(where: { $0.id == list.id }) else { return }
+                if let saved { page.checklists[i] = saved } else { page.checklists.remove(at: i) }
             }
         }
+        return view
     }
 
     // Voice notes
@@ -1809,6 +1760,148 @@ extension NoteCanvasView {
 }
 
 /// With the text pen, writing anywhere on the page becomes typed text through Scribble, Apple's own handwriting engine.
+/// Typing into one spot of a calendar.
+final class CalendarEdit {
+    let view = UITextView()
+    let shape: UUID
+    let key: String
+    let baseSize: CGFloat
+    var scale: CGFloat
+    var color: String?
+
+    init(shape: UUID, key: String, baseSize: CGFloat, note: CalendarNote?) {
+        self.shape = shape
+        self.key = key
+        self.baseSize = baseSize
+        scale = note?.scale ?? 1
+        color = note?.color
+    }
+}
+
+extension NoteCanvasView {
+    // Calendars
+
+    private static let calendarColors: [(String, String?)] = [
+        ("Ink", nil), ("Red", "D64545"), ("Orange", "E8833A"), ("Green", "3A9D5D"), ("Blue", "3A7BD5"), ("Purple", "8E5BD8"),
+    ]
+
+    /// Opens the calendar's title or the tapped day for typing, styled on its own.
+    func beginCalendarEdit(_ id: UUID, at point: CGPoint) {
+        endCalendarEdit()
+        guard let shape = page?.shapes.first(where: { $0.id == id }), let d = shape.diagram, d.type == .calendar,
+              let c = shape.points.first, let radii = shape.radii else { return }
+        let a = CGFloat(shape.rotation ?? 0)
+        let v = CGPoint(x: point.x - c.x, y: point.y - c.y)
+        let local = CGPoint(x: v.x * cos(-a) - v.y * sin(-a), y: v.x * sin(-a) + v.y * cos(-a))
+        let r = CGRect(x: -radii.width, y: -radii.height, width: radii.width * 2, height: radii.height * 2)
+        guard let (key, slot) = DiagramRenderer.calendarSlots(d, in: r).first(where: { $0.value.contains(local) }) else { return }
+        let note = d.notes?.first { $0.key == key }
+        let edit = CalendarEdit(shape: id, key: key, baseSize: DiagramRenderer.calendarTextSize(key, in: r), note: note)
+        let title = key == "title"
+        let view = edit.view
+        view.text = note?.text ?? (title ? DiagramRenderer.calendarTitle(d) : "")
+        view.textAlignment = title ? .center : .left
+        view.backgroundColor = Theme.uiAccent.withAlphaComponent(0.1)
+        view.layer.cornerRadius = 4
+        view.layer.borderColor = Theme.uiAccent.withAlphaComponent(0.6).cgColor
+        view.layer.borderWidth = 1.5
+        let top = title ? max((slot.height - edit.baseSize * edit.scale * 1.3) / 2, 0) : DiagramRenderer.calendarNoteInset(in: slot)
+        view.textContainerInset = UIEdgeInsets(top: top, left: 0, bottom: 0, right: 0)
+        view.textContainer.lineFragmentPadding = title ? 0 : 4
+        view.delegate = self
+        view.bounds = CGRect(origin: .zero, size: slot.size)
+        view.center = CGPoint(x: c.x + slot.midX * cos(a) - slot.midY * sin(a), y: c.y + slot.midX * sin(a) + slot.midY * cos(a))
+        view.transform = CGAffineTransform(rotationAngle: a)
+        calendarEditor = edit
+        styleCalendarEdit()
+        view.inputAccessoryView = calendarBar()
+        // the saved text would show through underneath while typing
+        var preview = shape
+        preview.diagram?.notes = (d.notes ?? []).filter { $0.key != key } + (title ? [CalendarNote(key: "title", text: " ")] : [])
+        shapesView.preview = preview
+        overlay.addSubview(view)
+        view.becomeFirstResponder()
+    }
+
+    private func styleCalendarEdit() {
+        guard let edit = calendarEditor else { return }
+        edit.view.font = DiagramRenderer.calendarFont(edit.baseSize * edit.scale, title: edit.key == "title")
+        edit.view.textColor = edit.color.map { UIColor(hex: $0) } ?? inkColor
+    }
+
+    private func calendarBar() -> UIToolbar {
+        let bar = UIToolbar()
+        func item(_ symbol: String, _ action: @escaping () -> Void) -> UIBarButtonItem {
+            UIBarButtonItem(image: UIImage(systemName: symbol), primaryAction: UIAction { _ in action() })
+        }
+        let colours = UIMenu(children: Self.calendarColors.map { name, hex in
+            UIAction(title: name, image: UIImage(systemName: "circle.fill")?.withTintColor(hex.map { UIColor(hex: $0) } ?? inkColor, renderingMode: .alwaysOriginal)) { [weak self] _ in
+                self?.calendarEditor?.color = hex
+                self?.styleCalendarEdit()
+            }
+        })
+        bar.items = [
+            item("chevron.left") { [weak self] in self?.turnCalendar(by: -1) },
+            item("chevron.right") { [weak self] in self?.turnCalendar(by: 1) },
+            UIBarButtonItem(systemItem: .flexibleSpace),
+            item("textformat.size.smaller") { [weak self] in self?.resizeCalendarText(0.87) },
+            item("textformat.size.larger") { [weak self] in self?.resizeCalendarText(1.15) },
+            UIBarButtonItem(image: UIImage(systemName: "paintpalette"), menu: colours),
+            UIBarButtonItem(systemItem: .flexibleSpace),
+            item("trash") { [weak self] in
+                guard let self, let id = self.calendarEditor?.shape else { return }
+                self.calendarEditor = nil
+                self.deselectShape()
+                self.editPage("Delete Calendar") { page in page.shapes.removeAll { $0.id == id } }
+            },
+            UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.endCalendarEdit() }),
+        ]
+        bar.sizeToFit()
+        return bar
+    }
+
+    private func resizeCalendarText(_ factor: CGFloat) {
+        guard let edit = calendarEditor else { return }
+        edit.scale = min(max(edit.scale * factor, 0.4), 4)
+        styleCalendarEdit()
+    }
+
+    /// Steps to the month before or after, saving what's typed first.
+    private func turnCalendar(by months: Int) {
+        guard let id = calendarEditor?.shape else { return }
+        endCalendarEdit()
+        editPage("Change Month") { page in
+            guard let i = page.shapes.firstIndex(where: { $0.id == id }), var d = page.shapes[i].diagram else { return }
+            let now = Calendar.current.dateComponents([.year, .month], from: Date())
+            let index = (d.year ?? now.year ?? 2026) * 12 + (d.month ?? now.month ?? 1) - 1 + months
+            d.year = index / 12
+            d.month = index % 12 + 1
+            page.shapes[i].diagram = d
+        }
+    }
+
+    func endCalendarEdit() {
+        guard let edit = calendarEditor else { return }
+        calendarEditor = nil
+        edit.view.removeFromSuperview()
+        shapesView.preview = nil
+        guard let shape = page?.shapes.first(where: { $0.id == edit.shape }), let d = shape.diagram else { return rebuildOverlay() }
+        let text = edit.view.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var notes = d.notes ?? []
+        let old = notes.first { $0.key == edit.key }
+        notes.removeAll { $0.key == edit.key }
+        let plainTitle = edit.key == "title" && text == DiagramRenderer.calendarTitle(d) && edit.scale == 1 && edit.color == nil
+        if !text.isEmpty, !plainTitle {
+            notes.append(CalendarNote(key: edit.key, text: text, scale: edit.scale == 1 ? nil : edit.scale, color: edit.color))
+        }
+        guard notes.first(where: { $0.key == edit.key }) != old else { return rebuildOverlay() }
+        editPage("Edit Calendar") { page in
+            guard let i = page.shapes.firstIndex(where: { $0.id == edit.shape }) else { return }
+            page.shapes[i].diagram?.notes = notes.isEmpty ? nil : notes
+        }
+    }
+}
+
 extension NoteCanvasView: UIIndirectScribbleInteractionDelegate {
     private static let newText = "new"
 
