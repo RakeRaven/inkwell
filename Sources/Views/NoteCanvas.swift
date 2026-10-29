@@ -1299,9 +1299,9 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
                 editor.shape = drag.base.rotated(by: turn)
             } else {
                 let k = hypot(point.x - c.x, point.y - c.y) / max(hypot(drag.start.x - c.x, drag.start.y - c.y), 1)
-                // never shrinks to a speck or past the page; diagrams need room for their detail
+                // never collapses to nothing or grows far past the page
                 let b = drag.base.bounds, side = max(b.width, b.height, 1)
-                let smallest: CGFloat = drag.base.kind == .diagram ? 90 : 24
+                let smallest: CGFloat = 6
                 editor.shape = drag.base.scaled(by: min(max(k, smallest / side), pageSize.width * 1.5 / side))
             }
             shapesView.preview = editor.shape
@@ -1326,7 +1326,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         deselectShape(animated: false)
         selectedShape = id
         let editor = ShapeEditor(shape: shape)
-        editor.onCommit = { [weak self] in self?.commitShape($0) }
+        // mid-drag the canvas saves at the end; saving now would rebuild the knob out from under the finger
+        editor.onCommit = { [weak self] in if self?.shapeDrag == nil { self?.commitShape($0) } }
         editor.onDelete = { [weak self] in
             self?.editPage("Delete Shape") { page in page.shapes.removeAll { $0.id == id } }
             self?.deselectShape()

@@ -308,11 +308,8 @@ struct NotebookControls: View {
                 .foregroundStyle(Theme.muted)
                 .monospacedDigit()
                 .fixedSize()
-            Button {
-                pageIndex = isLastPage ? store.addPage(after: index) : index + 1
-            } label: {
-                BarIcon(isLastPage ? "plus" : "chevron.right")
-            }
+            Button { pageIndex = index + 1 } label: { BarIcon("chevron.right") }
+                .disabled(isLastPage)
             // adds after this page from anywhere; hold for before or at the end
             Menu {
                 Button { pageIndex = store.addPage(after: index) } label: { Label("Add Page After This", systemImage: "plus.square") }

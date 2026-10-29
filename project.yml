@@ -20,8 +20,8 @@ targets:
       path: Support/Info.plist
       properties:
         CFBundleDisplayName: Inkwell
-        CFBundleShortVersionString: "0.9.3"
-        CFBundleVersion: "18"
+        CFBundleShortVersionString: "0.9.4"
+        CFBundleVersion: "19"
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: Inkwell records voice notes onto your pages.
         UIFileSharingEnabled: true

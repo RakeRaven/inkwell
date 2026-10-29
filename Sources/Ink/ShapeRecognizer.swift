@@ -89,8 +89,9 @@ enum ShapeRecognizer {
         let boxError = boxFit(points, in: frame)
         // a circle sits about 0.05 off its own bounding box anyway, so box fit alone can't tell them
         // apart; a loop is round when an ellipse fits it nearly as well as a box does
+        // but three or more real corners means a polygon however round its fit
         let roundish = ellipseError < boxError * 2 && ellipseError < 0.14
-        if sharpestTurn(points) < 55 || roundish {
+        if sharpestTurn(points) < 55 || (roundish && cornerCount(points) < 3) {
             return ellipseOutline(frame, startingAt: first)
         }
         let corners = removeFlat(simplifyClosed(points, epsilon: size * 0.06), closed: true, minEdge: size * 0.1)
@@ -130,6 +131,19 @@ enum ShapeRecognizer {
             worst = max(worst, 180 - angle(points[i - k], points[i], points[i + k]))
         }
         return worst
+    }
+
+    /// Separate spots where the loop turns hard, away from the seam.
+    private static func cornerCount(_ points: [CGPoint]) -> Int {
+        let n = points.count
+        let k = 4, seam = max(k, n / 14)
+        guard n > seam * 2 + 4 else { return 0 }
+        var count = 0, lastCorner = -n
+        for i in seam..<(n - seam) where 180 - angle(points[i - k], points[i], points[i + k]) > 65 {
+            if i - lastCorner > n / 12 { count += 1 }
+            lastCorner = i
+        }
+        return count
     }
 
     // Fitting
