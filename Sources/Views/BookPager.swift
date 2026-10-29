@@ -226,6 +226,13 @@ struct PageCurlPager: UIViewControllerRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+            // dragging a picked-up shape's knobs must not curl the page
+            if gesture !== pinch, let view = gesture.view,
+               let page = view.hitTest(gesture.location(in: view), with: nil)
+                .flatMap({ sequence(first: $0, next: \.superview).first { $0 is NoteCanvasView } }) as? NoteCanvasView,
+               page.holdsShape {
+                return false
+            }
             if gesture !== push, gesture !== pinch {
                 guard turning == nil, let view = gesture.view else { return false }
                 let forward: Bool

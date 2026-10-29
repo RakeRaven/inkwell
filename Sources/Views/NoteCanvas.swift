@@ -264,6 +264,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
     private let shapesView = ShapeLayerView()
     private var liveShape: ShapeItem?
     private var selectedShape: UUID?
+    /// A shape is picked up, so finger drags belong to it rather than to turning the page.
+    var holdsShape: Bool { selectedShape != nil || shapeDrag != nil }
     private var editor: ShapeEditor?
     private weak var inspector: FloatingPanel?
     private var handleViews: [UIView] = []
@@ -401,6 +403,8 @@ final class NoteCanvasView: UIView, UIEditMenuInteractionDelegate, UITextViewDel
         }
         swipeGate.canBegin = { [weak self] swipe in
             guard let self, self.mode == .draw, !self.bookMode, self.canvas.zoomScale <= self.fitScale * 1.05 else { return false }
+            // a quick knob drag reads as a swipe and would cancel it
+            if swipe.numberOfTouchesRequired == 1, self.holdsShape { return false }
             return swipe.numberOfTouchesRequired == 2 || self.ink.pencilOnly
         }
 
